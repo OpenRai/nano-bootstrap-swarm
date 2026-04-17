@@ -37,7 +37,7 @@ Your Nano secret key (64-char hex, 32 bytes) is already an Ed25519 seed. The sam
 
 ```bash
 cd /opt/nano-bootstrap-swarm
-.venv/bin/pip install nano_lib_py
+uv pip install nano_lib_py
 .venv/bin/python3 -c "
 import getpass
 from nano_lib_py import get_account_id, get_account_key_pair
