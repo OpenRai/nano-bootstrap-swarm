@@ -37,20 +37,23 @@ Your Nano secret key (64-char hex, 32 bytes) is already an Ed25519 seed. The sam
 
 ```bash
 cd /opt/nano-bootstrap-swarm
-.venv/bin/pip install nanolib
 .venv/bin/python3 -c "
-from nanolib import Wallet
-from shared.nano_identity import _parse_private_key
+from shared.nano_identity import _parse_private_key, public_key_to_nano_address
 from nacl.signing import SigningKey
 
 # Replace with your Nano secret key (64-char hex, 32 bytes)
 NANO_SECRET = 'YOUR_64_CHAR_NANO_SECRET_KEY_HEX'
-wallet = Wallet(seed=NANO_SECRET)
-print(f'Nano address: {wallet.address()}')
+seed = _parse_private_key(NANO_SECRET)
+sk = SigningKey(seed)
+pub_hex = sk.verify_key.encode().hex()
+nano_addr = public_key_to_nano_address(sk.verify_key.encode())
+print(f'Nano address: {nano_addr}')
 print(f'DHT_PRIVATE_KEY: {NANO_SECRET}')
-print(f'AUTHORITY_PUBKEY:  {wallet.get_public_key()}')
+print(f'AUTHORITY_PUBKEY:  {pub_hex}')
 "
 ```
+
+Note: This uses standard Ed25519 (SHA-512 expansion) for the public key, so the Nano address will differ from what `nano-vanity` shows. The DHT signing key is equally secure — the address is cosmetic only. If you need the vanity address to match, use `nano-vanity`'s output as-is and just pass the secret key as `DHT_PRIVATE_KEY`.
 
 ### Option B: Generate a fresh random key
 
