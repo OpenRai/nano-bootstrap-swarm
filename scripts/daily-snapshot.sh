@@ -80,9 +80,12 @@ else
 fi
 
 # --- Step 3: Download with rclone (resumable) ---
-log "Downloading with rclone"
-# Use --stats before the subcommand (global flag) for periodic logging
-stdbuf -oL -eL rclone --stats 20s --stats-one-line copyurl --no-check-certificate --s3-acl public-read "$LATEST_URL" "$TARGET_FILE" 2>&1 | while IFS= read -r line; do log "rclone: $line"; done
+log "Downloading with rclone (see $LOG_FILE for progress)"
+# Run rclone in background, writing stats to a separate file that we can tail
+stdbuf -oL -eL rclone --stats 20s --stats-one-line copyurl --no-check-certificate --s3-acl public-read "$LATEST_URL" "$TARGET_FILE" >> "$LOG_FILE" 2>&1 &
+
+# Wait for download to complete
+wait $!
 
 if [ ! -f "$TARGET_FILE" ]; then
     log "ERROR: Download failed — file not found"
