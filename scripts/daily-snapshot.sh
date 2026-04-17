@@ -130,7 +130,9 @@ log "Creating torrent and publishing to DHT"
 
 cd /opt/nano-bootstrap-swarm
 source .venv/bin/activate
-source /home/openrai/.env
+if [ -z "$DHT_PRIVATE_KEY" ] && [ -f /home/openrai/.env ]; then
+    source /home/openrai/.env
+fi
 
 python -m producer.cli publish \
     --private-key "$DHT_PRIVATE_KEY" \

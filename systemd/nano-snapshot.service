@@ -1,0 +1,16 @@
+[Unit]
+Description=Nano P2P Snapshot Pipeline (daily fetch, compact, compress, publish)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=openrai
+EnvironmentFile=-/home/openrai/.env
+Environment=OUTPUT_DIR=/opt/nano-snapshots
+Environment=WEB_SEED_URL=https://s3.us-east-2.amazonaws.com/repo.nano.org/snapshots/latest
+ExecStart=/opt/nano-bootstrap-swarm/scripts/daily-snapshot.sh
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=nano-snapshot
+TimeoutStopSec=3600
