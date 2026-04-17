@@ -12,7 +12,7 @@ from shared.bep46 import build_dht_value, sign_mutable_item
 from shared.nano_identity import compute_bep46_target_id, derive_nano_address
 
 STATE_FILE = "publisher_state.json"
-DHT_SALT = "daily"
+DEFAULT_SALT = "daily"
 DHT_PUBLISH_TIMEOUT = 120
 
 
@@ -39,19 +39,20 @@ def publish_to_dht(
     piece_size: int = 32 * 1024 * 1024,
     state_path: str = STATE_FILE,
     dry_run: bool = False,
+    salt: str = DEFAULT_SALT,
 ) -> dict:
     state = load_state(state_path)
     seq = state.get("last_seq", 0) + 1
 
     pub_key_bytes, nano_address = derive_nano_address(private_key_hex)
-    target_id = compute_bep46_target_id(pub_key_bytes, DHT_SALT)
+    target_id = compute_bep46_target_id(pub_key_bytes, salt)
 
     print(f"Publisher identity: {nano_address}")
     print(f"DHT target ID (SHA-1): {target_id.hex()}")
-    print(f"Publishing seq={seq}, info_hash={info_hash_hex}")
+    print(f"Publishing seq={seq}, info_hash={info_hash_hex}, salt='{salt}'")
 
     value_bytes = build_dht_value(info_hash_hex, piece_size)
-    signature, derived_pub = sign_mutable_item(private_key_hex, value_bytes, seq, salt=DHT_SALT)
+    signature, derived_pub = sign_mutable_item(private_key_hex, value_bytes, seq, salt=salt)
 
     if derived_pub != pub_key_bytes:
         raise PublishError("Derived public key mismatch")
@@ -92,7 +93,7 @@ def publish_to_dht(
     def put_callback(_entry, sign, _new_seq, _new_salt):
         sign[:] = signature
 
-    ses.dht_put_item(pubkey_list, put_callback, DHT_SALT.encode("utf-8"))
+    ses.dht_put_item(pubkey_list, put_callback, salt.encode("utf-8"))
 
     print("Waiting for DHT put confirmation...")
     deadline = time.time() + DHT_PUBLISH_TIMEOUT
@@ -146,6 +147,11 @@ def main() -> None:
     parser.add_argument(
         "--dry-run", action="store_true", help="Create payload but don't publish to DHT"
     )
+    parser.add_argument(
+        "--salt",
+        default=os.environ.get("DHT_SALT", DEFAULT_SALT),
+        help=f"DHT salt (env DHT_SALT, default: {DEFAULT_SALT})",
+    )
     args = parser.parse_args()
 
     private_key = args.private_key or os.environ.get("DHT_PRIVATE_KEY")
@@ -160,6 +166,7 @@ def main() -> None:
             piece_size=args.piece_size,
             state_path=args.state_file,
             dry_run=args.dry_run,
+            salt=args.salt,
         )
         print(json.dumps(result, indent=2))
     except PublishError as e:

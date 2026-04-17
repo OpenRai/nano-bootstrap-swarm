@@ -4,6 +4,7 @@ services:
     environment:
       AUTHORITY_PUBKEY: "${AUTHORITY_PUBKEY:?AUTHORITY_PUBKEY is required}"
       DATA_DIR: /data
+      DHT_SALT: "daily"
       POLL_INTERVAL: "600"
       LOG_LEVEL: INFO
     volumes:

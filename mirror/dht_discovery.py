@@ -13,7 +13,7 @@ from shared.nano_identity import compute_bep46_target_id
 
 logger = logging.getLogger("mirror.discovery")
 
-DHT_SALT = "daily"
+DEFAULT_SALT = "daily"
 MAX_RETRIES = 3
 RETRY_BACKOFF = [10, 30, 60]
 DHT_TIMEOUT = 120
@@ -30,13 +30,14 @@ class DHTDiscoveryResult:
 def discover_latest_snapshot(
     session,
     authority_pubkey_hex: str,
+    salt: str = DEFAULT_SALT,
     timeout: float = DHT_TIMEOUT,
 ) -> Optional[DHTDiscoveryResult]:
     pub_key_bytes = bytes.fromhex(authority_pubkey_hex)
-    target_id = compute_bep46_target_id(pub_key_bytes, DHT_SALT)
+    target_id = compute_bep46_target_id(pub_key_bytes, salt)
 
     logger.info(
-        f"Querying DHT for mutable item (target: {target_id.hex()[:16]}..., salt: '{DHT_SALT}')"
+        f"Querying DHT for mutable item (target: {target_id.hex()[:16]}..., salt: '{salt}')"
     )
 
     for attempt in range(MAX_RETRIES):
@@ -45,7 +46,7 @@ def discover_latest_snapshot(
             logger.info(f"Retry {attempt}/{MAX_RETRIES} after {wait_time}s")
             time.sleep(wait_time)
 
-        session.dht_get_mutable_item(pub_key_bytes, DHT_SALT)
+        session.dht_get_mutable_item(pub_key_bytes, salt)
 
         deadline = time.time() + timeout
         found = False
@@ -56,7 +57,7 @@ def discover_latest_snapshot(
                 if not hasattr(lt, "dht_mutable_item_alert"):
                     continue
                 if isinstance(alert, lt.dht_mutable_item_alert):
-                    result = _process_mutable_item_alert(alert, pub_key_bytes)
+                    result = _process_mutable_item_alert(alert, pub_key_bytes, salt)
                     if result is not None:
                         return result
                     found = True
@@ -74,6 +75,7 @@ def discover_latest_snapshot(
 def _process_mutable_item_alert(
     alert,
     expected_pub_key: bytes,
+    salt: str = DEFAULT_SALT,
 ) -> Optional[DHTDiscoveryResult]:
     try:
         value_data = alert.value
@@ -87,11 +89,13 @@ def _process_mutable_item_alert(
 
         seq = alert.seq if hasattr(alert, "seq") else 0
         signature = alert.signature if hasattr(alert, "signature") else b""
-        salt = alert.salt if hasattr(alert, "salt") else DHT_SALT
+        alert_salt = alert.salt if hasattr(alert, "salt") else None
 
         verified = False
         if signature and seq > 0:
-            verified = verify_mutable_item(expected_pub_key, value_bytes, seq, signature, salt=salt)
+            verified = verify_mutable_item(
+                expected_pub_key, value_bytes, seq, signature, salt=alert_salt or salt
+            )
             if not verified:
                 logger.error("DHT item signature verification FAILED — rejecting")
                 return None

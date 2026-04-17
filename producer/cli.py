@@ -11,7 +11,7 @@ SCRIPT_DIR = Path(__file__).parent.resolve()
 PROJECT_ROOT = SCRIPT_DIR.parent
 sys.path.insert(0, str(PROJECT_ROOT))  # noqa: E402
 
-from producer.publish import publish_to_dht  # noqa: E402
+from producer.publish import DEFAULT_SALT, publish_to_dht  # noqa: E402
 from producer.torrent_create import create_torrent  # noqa: E402
 
 
@@ -62,6 +62,7 @@ def cmd_publish(args: argparse.Namespace) -> None:
         piece_size=args.piece_size,
         state_path=args.state_file,
         dry_run=args.dry_run,
+        salt=args.salt,
     )
     print(json.dumps(result, indent=2))
 
@@ -102,6 +103,11 @@ def main() -> None:
         "--state-file", default="publisher_state.json", help="Path to publisher state file"
     )
     common_args.add_argument("--dry-run", action="store_true", help="Don't publish to DHT")
+    common_args.add_argument(
+        "--salt",
+        default=os.environ.get("DHT_SALT", DEFAULT_SALT),
+        help=f"DHT salt (env DHT_SALT, default: {DEFAULT_SALT})",
+    )
 
     snap_parser = subparsers.add_parser(
         "snapshot", parents=[common_args], help="Extract and compress ledger"

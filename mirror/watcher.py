@@ -6,10 +6,11 @@ import os
 import signal
 import sys
 import time
+from enum import Enum
 from pathlib import Path
 from typing import Optional
 
-from mirror.dht_discovery import DHTDiscoveryResult, discover_latest_snapshot
+from mirror.dht_discovery import DEFAULT_SALT, DHTDiscoveryResult, discover_latest_snapshot
 from mirror.libtorrent_session import LibtorrentSession
 from shared.nano_identity import public_key_to_nano_address
 
@@ -17,9 +18,16 @@ logger = logging.getLogger("mirror.watcher")
 
 DEFAULT_DATA_DIR = os.environ.get("DATA_DIR", "/data")
 DEFAULT_POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "600"))
+DEFAULT_DOWNLOAD_TIMEOUT = 0
 STATE_FILENAME = "mirror_state.json"
 
 WEB_SEED_URL = "https://s3.us-east-2.amazonaws.com/repo.nano.org/snapshots/latest"
+
+
+class DownloadStatus(Enum):
+    SEEDING = "seeding"
+    TIMEOUT = "timeout"
+    ERROR = "error"
 
 
 class MirrorState:
@@ -70,11 +78,15 @@ class MirrorWatcher:
         data_dir: str = DEFAULT_DATA_DIR,
         poll_interval: int = DEFAULT_POLL_INTERVAL,
         web_seed_url: str = WEB_SEED_URL,
+        salt: str = DEFAULT_SALT,
+        download_timeout: int = DEFAULT_DOWNLOAD_TIMEOUT,
     ):
         self.authority_pubkey_hex = authority_pubkey_hex
         self.data_dir = data_dir
         self.poll_interval = poll_interval
         self.web_seed_url = web_seed_url
+        self.salt = salt
+        self.download_timeout = download_timeout
 
         self.pub_key_bytes = bytes.fromhex(self.authority_pubkey_hex)
         self.nano_address = public_key_to_nano_address(self.pub_key_bytes)
@@ -84,14 +96,22 @@ class MirrorWatcher:
         self._current_info_hash: Optional[str] = None
         self._running = False
 
-    def start(self) -> None:
+    def start(self, *, once: bool = False) -> None:
         logger.info("=" * 60)
         logger.info("Nano P2P Mirror Service Starting")
         logger.info(f"Authority Nano address: {self.nano_address}")
         logger.info(f"Authority public key: {self.authority_pubkey_hex[:16]}...")
         logger.info(f"Data directory: {self.data_dir}")
-        logger.info(f"Poll interval: {self.poll_interval}s")
         logger.info(f"Web seed URL: {self.web_seed_url}")
+        logger.info(f"DHT salt: '{self.salt}'")
+        if once:
+            logger.info("Mode: LEECH (download-once, exit when done)")
+            if self.download_timeout > 0:
+                logger.info(f"Download timeout: {self.download_timeout}s")
+            else:
+                logger.info("Download timeout: infinite")
+        else:
+            logger.info(f"Mode: SWARM (continuous polling every {self.poll_interval}s)")
         logger.info("=" * 60)
 
         self.session = LibtorrentSession(
@@ -105,15 +125,24 @@ class MirrorWatcher:
         signal.signal(signal.SIGTERM, self._handle_signal)
         signal.signal(signal.SIGINT, self._handle_signal)
 
-        logger.info("Waiting 30s for DHT to bootstrap...")
-        time.sleep(30)
-
-        try:
-            self._run_loop()
-        except Exception:
-            logger.exception("Fatal error in main loop")
-        finally:
-            self.stop()
+        if once:
+            logger.info("Waiting 15s for DHT to bootstrap (leech mode)...")
+            time.sleep(15)
+            try:
+                self._run_once()
+            except Exception:
+                logger.exception("Fatal error in leech mode")
+            finally:
+                self.stop()
+        else:
+            logger.info("Waiting 30s for DHT to bootstrap (swarm mode)...")
+            time.sleep(30)
+            try:
+                self._run_loop()
+            except Exception:
+                logger.exception("Fatal error in main loop")
+            finally:
+                self.stop()
 
     def stop(self) -> None:
         logger.info("Shutting down mirror service...")
@@ -126,12 +155,45 @@ class MirrorWatcher:
         logger.info(f"Received signal {signum}, initiating graceful shutdown")
         self._running = False
 
+    def _run_once(self) -> None:
+        logger.info("=== Leecher: starting single discovery cycle ===")
+        try:
+            result = discover_latest_snapshot(
+                session=self.session,
+                authority_pubkey_hex=self.authority_pubkey_hex,
+                salt=self.salt,
+            )
+        except Exception:
+            logger.exception("DHT discovery failed")
+            sys.exit(1)
+
+        if result is None:
+            logger.error("No snapshot discovered from DHT in leech mode")
+            sys.exit(1)
+
+        logger.info(
+            f"Leecher: discovered seq={result.sequence}, info_hash={result.info_hash_hex[:16]}..."
+        )
+
+        status = self._download_and_wait(result)
+        if status == DownloadStatus.SEEDING:
+            torrent_name = self.state.current_torrent_name or "unknown"
+            logger.info(f"Leecher: download complete, seeding. File: {torrent_name}")
+            sys.exit(0)
+        elif status == DownloadStatus.TIMEOUT:
+            logger.error(f"Leecher: download timed out after {self.download_timeout}s")
+            sys.exit(1)
+        else:
+            logger.error("Leecher: download failed")
+            sys.exit(1)
+
     def _run_loop(self) -> None:
         while self._running:
             try:
                 result = discover_latest_snapshot(
                     session=self.session,
                     authority_pubkey_hex=self.authority_pubkey_hex,
+                    salt=self.salt,
                 )
 
                 if result is not None:
@@ -183,6 +245,8 @@ class MirrorWatcher:
 
             t_info = handle.get_torrent_info()
             t_name = t_info.name() if t_info else "unknown"
+            self.state.current_torrent_name = t_name
+            self.state._save()
             logger.info(f"Now tracking torrent: {t_name}")
 
             self._monitor_download(handle, result.info_hash_hex)
@@ -190,34 +254,82 @@ class MirrorWatcher:
         except Exception:
             logger.exception(f"Failed to add torrent for info_hash {result.info_hash_hex[:16]}...")
 
-    def _monitor_download(self, handle, info_hash: str) -> None:
+    def _download_and_wait(self, result: DHTDiscoveryResult) -> DownloadStatus:
+        try:
+            handle = self.session.add_torrent(
+                info_hash=result.info_hash_hex,
+                save_path=self.data_dir,
+                web_seeds=[self.web_seed_url],
+            )
+
+            self._current_info_hash = result.info_hash_hex
+            self.state.update(result.sequence, result.info_hash_hex)
+
+            t_info = handle.get_torrent_info()
+            t_name = t_info.name() if t_info else "unknown"
+            self.state.current_torrent_name = t_name
+            self.state._save()
+            logger.info(f"Leecher: added torrent '{t_name}'")
+
+        except Exception:
+            logger.exception("Leecher: failed to add torrent")
+            return DownloadStatus.ERROR
+
+        return self._monitor_download(handle, result.info_hash_hex)
+
+    def _monitor_download(
+        self,
+        handle,
+        info_hash: str,
+    ) -> DownloadStatus:
         last_progress_log = 0.0
+        consecutive_stall_warnings = 0
+        start_time = time.time()
+
         while self._running:
+            if self.download_timeout > 0:
+                elapsed = time.time() - start_time
+                if elapsed >= self.download_timeout:
+                    logger.error(f"Download timeout reached ({self.download_timeout}s)")
+                    return DownloadStatus.TIMEOUT
+
             try:
                 status = handle.status()
                 progress = status.progress
                 state = str(status.state)
+                num_peers = status.num_peers
 
                 if progress - last_progress_log >= 0.05 or progress == 1.0:
                     dl_rate = status.download_rate
                     ul_rate = status.upload_rate
-                    num_peers = status.num_peers
                     logger.info(
                         f"Download: {progress * 100:.1f}% | State: {state} | "
                         f"DL: {dl_rate / 1000:.1f} KB/s | UL: {ul_rate / 1000:.1f} KB/s | "
                         f"Peers: {num_peers}"
                     )
                     last_progress_log = progress
+                    consecutive_stall_warnings = 0
 
                 if status.is_seeding:
                     logger.info(f"Snapshot seeding complete: {info_hash[:16]}...")
-                    break
+                    return DownloadStatus.SEEDING
+
+                if num_peers == 0 and progress == 0:
+                    consecutive_stall_warnings += 1
+                    if consecutive_stall_warnings >= 12:
+                        logger.warning(
+                            f"No peers, 0% progress for {consecutive_stall_warnings * 5}s "
+                            f"— download may be stalled"
+                        )
+                        consecutive_stall_warnings = 0
 
             except Exception as e:
                 logger.error(f"Error monitoring download: {e}")
-                break
+                return DownloadStatus.ERROR
 
             time.sleep(5)
+
+        return DownloadStatus.ERROR
 
 
 def main() -> None:
@@ -251,6 +363,22 @@ def main() -> None:
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
         help="Logging level",
     )
+    parser.add_argument(
+        "--salt",
+        default=os.environ.get("DHT_SALT", DEFAULT_SALT),
+        help=f"DHT salt (env DHT_SALT, default: {DEFAULT_SALT})",
+    )
+    parser.add_argument(
+        "--once",
+        action="store_true",
+        help="Leech mode: download once then exit (do not run as daemon)",
+    )
+    parser.add_argument(
+        "--download-timeout",
+        type=int,
+        default=DEFAULT_DOWNLOAD_TIMEOUT,
+        help="Download timeout in seconds (0=infinite, default: 0; auto-set to 3600 in leech mode)",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -275,13 +403,19 @@ def main() -> None:
         )
         sys.exit(1)
 
+    download_timeout = args.download_timeout
+    if args.once and download_timeout == 0:
+        download_timeout = 3600
+
     watcher = MirrorWatcher(
         authority_pubkey_hex=pubkey,
         data_dir=args.data_dir,
         poll_interval=args.poll_interval,
         web_seed_url=args.web_seed_url,
+        salt=args.salt,
+        download_timeout=download_timeout,
     )
-    watcher.start()
+    watcher.start(once=args.once)
 
 
 if __name__ == "__main__":
