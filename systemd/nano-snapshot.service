@@ -5,7 +5,6 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-User=openrai
 EnvironmentFile=-/home/openrai/.env
 Environment=OUTPUT_DIR=/opt/nano-snapshots
 Environment=WEB_SEED_URL=https://s3.us-east-2.amazonaws.com/repo.nano.org/snapshots/latest
