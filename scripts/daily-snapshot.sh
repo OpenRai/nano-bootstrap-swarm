@@ -81,9 +81,8 @@ fi
 
 # --- Step 3: Download with rclone (resumable) ---
 log "Downloading with rclone"
-# Use rclone with periodic logging (every 20s) instead of continuous progress
-# Redirect stderr to stdout to capture in log
-rclone copyurl --stats 20s --stats-one-line --no-check-certificate --s3-acl public-read "$LATEST_URL" "$TARGET_FILE" 2>&1 | tee -a "$LOG_FILE"
+# rclone stats go to stderr, so redirect stderr to stdout to capture in log
+rclone copyurl --stats 20s --stats-one-line --no-check-certificate --s3-acl public-read "$LATEST_URL" "$TARGET_FILE" 2>&1 | while read line; do log "rclone: $line"; done
 
 if [ ! -f "$TARGET_FILE" ]; then
     log "ERROR: Download failed — file not found"
