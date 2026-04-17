@@ -106,6 +106,29 @@ python -m mirror.watcher \
   --download-timeout 3600         # seconds (0=infinite; auto-3600 in --once)
 ```
 
+### Deployment
+
+The production pipeline runs on a remote server via **user-level systemd** (not system-level).
+
+**Always use `systemctl --user` and `journalctl --user`** — never system-level units. The service unit must NOT contain `User=` (user services already run as the owning user).
+
+Unit files live in `systemd/` and are symlinked into `~/.config/systemd/user/` on the server. After any change:
+```bash
+cd /opt/nano-bootstrap-swarm && git pull
+systemctl --user daemon-reload
+systemctl --user restart nano-snapshot.timer
+```
+
+Helper scripts (run on the server as the `openrai` user):
+```bash
+./scripts/nano-snapshot-status.sh [n]     # timer + last n log lines
+./scripts/nano-snapshot-start.sh [--follow]
+./scripts/nano-snapshot-stop.sh
+./scripts/nano-snapshot-restart.sh [--service]
+./scripts/nano-snapshot-logs.sh [n]
+./scripts/nano-mirror-build.sh [--push]
+```
+
 ### Dependencies
 
 - **Runtime:** Python 3.12+, libtorrent 2.x (C++ built in Docker), pynacl, bencodepy, zstd
