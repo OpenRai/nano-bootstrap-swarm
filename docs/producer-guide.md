@@ -50,46 +50,61 @@ Public key  (AUTHORITY_PUBKEY):  77ff84905a91936367c01360803104f92432fcd904a4351
 
 ---
 
-## Publishing Your Public Key
+## Credentials
 
-Mirrors need to know your public key through a trusted channel before they can verify your DHT items. Communicate it out-of-band (e.g., your website, a GitHub release note, a Discord announcement).
+The private key lives on the producer server only. Mirror operators need only the public key.
+
+On the server, credentials are stored in `/home/openrai/.env` (mode 600, owned by `openrai`):
+
+```
+DHT_PRIVATE_KEY=<your_64_char_hex_private_key>
+AUTHORITY_PUBKEY=<your_32_char_hex_public_key>
+NANO_LEDGER_PATH=/var/nano/data/data.ldb
+OUTPUT_DIR=/opt/nano-snapshots
+```
+
+This file is read by the systemd service via `EnvironmentFile=-/home/openrai/.env` and by the daily script when run manually (not via systemd).
 
 ---
 
 ## Running the Snapshot Pipeline
 
-### Environment Variables
+### Automated (systemd timer)
 
-| Variable | Default | Description |
-|---|---|---|
-| `NANO_LEDGER_PATH` | `/var/nano/data/data.ldb` | Path to live LMDB |
-| `OUTPUT_DIR` | `.` | Where to write `.zst` and `.torrent` files |
-| `DHT_PRIVATE_KEY` | _(required)_ | Ed25519 private key hex |
-| `WEB_SEED_URL` | _(empty)_ | S3/HTTP URL for web seeding |
+The production pipeline runs automatically via systemd. See [Scheduling with systemd](#scheduling-with-systemd) below.
 
-### Step 1: Extract and Compress
+### Manual ad-hoc run
 
 ```bash
-export NANO_LEDGER_PATH=/var/nano/data/data.ldb
-export OUTPUT_DIR=/opt/nano-snapshots
+cd /opt/nano-bootstrap-swarm
+source .venv/bin/activate
+if [ -z "$DHT_PRIVATE_KEY" ] && [ -f /home/openrai/.env ]; then
+    source /home/openrai/.env
+fi
 
-python -m producer.cli snapshot
-# Writes: /opt/nano-snapshots/nano-daily.ldb.zst
+python -m producer.cli full \
+  --ledger-path /var/nano/data/data.ldb \
+  --private-key "$DHT_PRIVATE_KEY" \
+  --web-seed-url https://s3.us-east-2.amazonaws.com/repo.nano.org/snapshots/latest
 ```
 
-### Step 2: Create Torrent and Publish to DHT
+### Individual steps (advanced)
 
 ```bash
-export DHT_PRIVATE_KEY=<your_64_char_hex_private_key>
-export WEB_SEED_URL=https://s3.us-east-2.amazonaws.com/your-bucket/snapshots/
+# Step 1: Extract and compress
+export NANO_LEDGER_PATH=/var/nano/data/data.ldb
+export OUTPUT_DIR=/opt/nano-snapshots
+python -m producer.cli snapshot
 
+# Step 2: Create torrent and publish to DHT
+source /home/openrai/.env
 python -m producer.cli publish \
   --private-key "$DHT_PRIVATE_KEY" \
-  --web-seed-url "$WEB_SEED_URL" \
+  --web-seed-url https://s3.us-east-2.amazonaws.com/repo.nano.org/snapshots/latest \
   --output-dir /opt/nano-snapshots
 ```
 
-Expected output:
+Expected publish output:
 ```
 Publisher identity: nano_...
 DHT target ID (SHA-1): <target>
@@ -99,15 +114,6 @@ Value size: N bytes
 Waiting for DHT to bootstrap...
 DHT put confirmed
 Published seq=1 to DHT
-```
-
-### Full Pipeline (snapshot + publish)
-
-```bash
-python -m producer.cli full \
-  --ledger-path /var/nano/data/data.ldb \
-  --private-key "$DHT_PRIVATE_KEY" \
-  --web-seed-url "$WEB_SEED_URL"
 ```
 
 ---
@@ -131,18 +137,34 @@ docker run --rm -e AUTHORITY_PUBKEY=<pubkey> -e DHT_SALT=weekly ghcr.io/openrai/
 
 ---
 
-## Scheduling with Cron
+## Scheduling with systemd
 
-Example crontab entry for daily snapshots at 04:00 UTC:
+Daily snapshots run automatically via a systemd timer on the producer server.
 
-```cron
-0 4 * * * cd /opt/nano-snapshot && \
-  NANO_LEDGER_PATH=/var/nano/data/data.ldb \
-  OUTPUT_DIR=/opt/nano-snapshots \
-  DHT_PRIVATE_KEY=<your_key_hex> \
-  WEB_SEED_URL=https://s3.us-east-2.amazonaws.com/your-bucket/snapshots/ \
-  python -m producer.cli full >> /var/log/nano-snapshot.log 2>&1
+**Unit files:** `/etc/systemd/system/nano-snapshot.service` and `/etc/systemd/system/nano-snapshot.timer` (deployed from `systemd/` in this repo).
+
+**Schedule:** 02:00 UTC daily, with up to 5 minutes of random jitter and `Persistent=true` (catches up if the server was offline).
+
+**Credentials:** The service reads `/home/openrai/.env` (EnvironmentFile), so keys are never in the unit file itself.
+
+**Pipeline steps:** The timer invokes `/opt/nano-bootstrap-swarm/scripts/daily-snapshot.sh`, which downloads from S3, extracts, compacts with `mdb_copy`, compresses with `zstd --rsyncable`, then runs `producer.cli publish`.
+
+```bash
+# Check timer status
+systemctl status nano-snapshot.timer
+systemctl list-timers nano-snapshot
+
+# View live logs
+journalctl -u nano-snapshot -f
+
+# Manual trigger (e.g., after server downtime)
+systemctl start nano-snapshot.service
+
+# The pipeline log is also written to:
+# /opt/nano-snapshots/nano-snapshot.log
 ```
+
+The service runs as `User=openrai` with `TimeoutStopSec=3600` (1 hour) to accommodate large downloads.
 
 ---
 
