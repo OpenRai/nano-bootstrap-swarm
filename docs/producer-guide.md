@@ -37,18 +37,18 @@ Your Nano secret key (64-char hex, 32 bytes) is already an Ed25519 seed. The sam
 
 ```bash
 cd /opt/nano-bootstrap-swarm
+.venv/bin/pip install nanolib
 .venv/bin/python3 -c "
+from nanolib import Wallet
+from shared.nano_identity import _parse_private_key
 from nacl.signing import SigningKey
-from shared.nano_identity import public_key_to_nano_address
 
 # Replace with your Nano secret key (64-char hex, 32 bytes)
 NANO_SECRET = 'YOUR_64_CHAR_NANO_SECRET_KEY_HEX'
-sk = SigningKey(bytes.fromhex(NANO_SECRET))
-pub_hex = sk.verify_key.encode().hex()
-nano_addr = public_key_to_nano_address(sk.verify_key.encode())
-print(f'Nano address: {nano_addr}')
+wallet = Wallet(seed=NANO_SECRET)
+print(f'Nano address: {wallet.address()}')
 print(f'DHT_PRIVATE_KEY: {NANO_SECRET}')
-print(f'AUTHORITY_PUBKEY:  {pub_hex}')
+print(f'AUTHORITY_PUBKEY:  {wallet.get_public_key()}')
 "
 ```
 
