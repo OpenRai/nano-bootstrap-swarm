@@ -77,7 +77,7 @@ else
 fi
 
 # --- Step 3: Download with rclone (resumable) ---
-rclone copyurl --progress "$LATEST_URL" "$TARGET_FILE"
+rclone copyurl --stats 20s --stats-one-line "$LATEST_URL" "$TARGET_FILE"
 
 if [ ! -f "$TARGET_FILE" ]; then
     log "ERROR: Download failed — file not found"

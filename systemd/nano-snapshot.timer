@@ -1,8 +1,8 @@
 [Unit]
-Description=Run Nano P2P Snapshot Pipeline daily at 02:00 UTC
+Description=Run Nano P2P Snapshot Pipeline hourly
 
 [Timer]
-OnCalendar=*-*-* 02:00:00 UTC
+OnCalendar=hourly
 Persistent=true
 RandomizedDelaySec=300
 
