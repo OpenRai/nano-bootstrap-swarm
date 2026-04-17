@@ -7,7 +7,7 @@ LEDGER_OUTPUT="${OUTPUT_DIR}/data.ldb"
 WEB_SEED_URL="${WEB_SEED_URL:-https://s3.us-east-2.amazonaws.com/repo.nano.org/snapshots/latest}"
 AGENT="nano-bootstrap-swarm/1.0"
 
-LOG_FILE="${LOG_FILE:-/var/log/nano-snapshot.log}"
+LOG_FILE="${LOG_FILE:-${OUTPUT_DIR}/nano-snapshot.log}"
 
 log() {
     echo "[$(date -Iseconds)] $*" | tee -a "$LOG_FILE"
