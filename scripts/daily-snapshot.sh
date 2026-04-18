@@ -83,28 +83,43 @@ else
     log "Starting new download: $LATEST_URL (expected ~60GB)"
 fi
 
-# --- Step 3: Download with rclone (resumable) ---
+# --- Step 3: Download with curl (resumable) ---
 log "Starting download: $LATEST_URL (expected ~60GB)"
 
 # If partial file exists, use curl with Range header for proper resume
-# rclone doesn't support in-place resume reliably
 if [ -f "$TARGET_FILE" ] && [ -s "$TARGET_FILE" ]; then
     CURRENT_SIZE=$(stat -c%s "$TARGET_FILE")
     log "Resuming from byte $CURRENT_SIZE using curl"
-    curl -# -A "$AGENT" -H "Range: bytes=$CURRENT_SIZE-" -o "$TARGET_FILE" "$LATEST_URL" 2>&1 | while read line; do log "curl: $line"; done
+    curl -# -A "$AGENT" -H "Range: bytes=$CURRENT_SIZE-" -o "$TARGET_FILE" "$LATEST_URL" &
+    CURL_PID=$!
 else
     log "Starting fresh download"
-    curl -# -A "$AGENT" -o "$TARGET_FILE" "$LATEST_URL" 2>&1 | while read line; do log "curl: $line"; done
+    curl -# -A "$AGENT" -o "$TARGET_FILE" "$LATEST_URL" &
+    CURL_PID=$!
 fi
+
+# Background progress logger - polls file size every 20 seconds
+(
+    LAST_SIZE=$(stat -c%s "$TARGET_FILE" 2>/dev/null || echo 0)
+    START_TIME=$(date +%s)
+    while kill -0 $CURL_PID 2>/dev/null; do
+        sleep 20
+        CURRENT_SIZE=$(stat -c%s "$TARGET_FILE" 2>/dev/null || echo 0)
+        ELAPSED=$(($(date +%s) - START_TIME))
+        log "Progress: $(numfmt --to=iec-i --suffix=B $CURRENT_SIZE) downloaded, ${ELAPSED}s elapsed"
+    done
+) &
+LOGGER_PID=$!
+
+# Wait for curl to complete
+wait $CURL_PID
+
+# Kill the logger
+kill $LOGGER_PID 2>/dev/null || true
 
 # Verify download completed
 if [ ! -f "$TARGET_FILE" ] || [ $(stat -c%s "$TARGET_FILE") -lt 1000000 ]; then
     log "ERROR: Download failed or file too small"
-    exit 1
-fi
-
-if [ ! -f "$TARGET_FILE" ]; then
-    log "ERROR: Download failed — file not found"
     exit 1
 fi
 
