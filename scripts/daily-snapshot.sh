@@ -75,6 +75,9 @@ rm -f "${WORK_DIR}/data.ldb"
 # Check for existing download
 if [ -f "$TARGET_FILE" ] && [ -s "$TARGET_FILE" ]; then
     log "Found existing download: $TARGET_FILE"
+    # Always clean up stale extraction artifacts when re-running
+    rm -rf "${WORK_DIR:?}/compacted"
+    rm -f "${WORK_DIR}/data.ldb"
 else
     log "Starting new download: $LATEST_URL"
 fi
@@ -112,7 +115,14 @@ log "Extracted data.ldb (${EXTRACTED_SIZE} bytes)"
 log "Compacting with mdb_copy"
 COMPACTED_DIR="${WORK_DIR}/compacted"
 mkdir -p "$COMPACTED_DIR"
-mdb_copy "$EXTRACTED_FILE" "$COMPACTED_DIR"
+
+# Remove any stale compacted files first
+rm -f "${COMPACTED_DIR}/data.ldb"
+
+if ! mdb_copy "$EXTRACTED_FILE" "$COMPACTED_DIR" 2>&1; then
+    log "ERROR: mdb_copy failed - $EXTRACTED_FILE may be corrupted"
+    exit 1
+fi
 
 COMPACTED_FILE="${COMPACTED_DIR}/data.ldb"
 if [ ! -f "$COMPACTED_FILE" ]; then
