@@ -5,7 +5,6 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUTPUT_DIR="${OUTPUT_DIR:-$HOME/nano-snapshots}"
 WEB_SEED_URL="${WEB_SEED_URL:-https://s3.us-east-2.amazonaws.com/repo.nano.org/snapshots/latest}"
 AGENT="nano-bootstrap-swarm/1.0"
-MAX_RUNTIME_HOURS=12
 
 LOG_FILE="${LOG_FILE:-${OUTPUT_DIR}/nano-snapshot.log}"
 
@@ -16,34 +15,25 @@ log() {
 WORK_DIR="${OUTPUT_DIR}/tmp"
 mkdir -p "$WORK_DIR"
 
-# --- Guard: prevent concurrent runs and stale downloads ---
-RUNNING_PID=$(pgrep -f "curl.*nano-snapshot" 2>/dev/null | head -1 || true)
-if [ -n "$RUNNING_PID" ]; then
-    RUNTIME_SECS=$(ps -o etimes= -p "$RUNNING_PID" 2>/dev/null | tr -d " " || echo "0")
-    RUNTIME_HOURS=$((RUNTIME_SECS / 3600))
-    if [ "$RUNTIME_HOURS" -lt "$MAX_RUNTIME_HOURS" ]; then
-        log "A curl instance is already running (PID $RUNNING_PID, ${RUNTIME_HOURS}h < ${MAX_RUNTIME_HOURS}h) — exiting"
-        exit 0
-    else
-        log "Stale curl instance running for ${RUNTIME_HOURS}h — killing PID $RUNNING_PID"
-        kill "$RUNNING_PID" 2>/dev/null || true
-        sleep 2
-    fi
+# --- Lockfile: prevent concurrent script instances (Bug 7 fix) ---
+LOCKFILE="${OUTPUT_DIR}/.snapshot.lock"
+exec 9>"$LOCKFILE"
+if ! flock -n 9; then
+    log "Another instance is already running — exiting"
+    exit 0
 fi
-
-# Clean up any stale curl processes
-for PID in $(pgrep -f "curl.*nano-snapshot" 2>/dev/null || true); do
-    log "Killing orphaned curl PID $PID"
-    kill "$PID" 2>/dev/null || true
-done
-sleep 1
 
 # --- Step 1: Resolve latest snapshot URL from S3 listing ---
 log "Resolving latest snapshot URL"
 
-RAW_URL=$(curl -sSL -A "$AGENT" "$WEB_SEED_URL" | tr -d '"\r')
+# Bug 2+3 fix: use -f to fail on HTTP errors, capture exit code explicitly
+RAW_URL=""
+if ! RAW_URL=$(curl -sSfL -A "$AGENT" "$WEB_SEED_URL" | tr -d '"\r\n '); then
+    log "ERROR: Could not fetch latest snapshot URL from $WEB_SEED_URL (curl exit $?)"
+    exit 1
+fi
 if [ -z "$RAW_URL" ]; then
-    log "ERROR: Could not resolve latest snapshot URL from $WEB_SEED_URL"
+    log "ERROR: Empty response from $WEB_SEED_URL"
     exit 1
 fi
 
@@ -59,11 +49,15 @@ fi
 log "Resolved: ${FILENAME}"
 TARGET_FILE="${WORK_DIR}/${FILENAME}"
 
-# --- Step 2: Decide whether to resume or start fresh ---
-# Always clean up any stale files to ensure a fresh start
-for STALE_FILE in "$WORK_DIR"/*.7z; do
+# --- Step 2: Clean up stale files ---
+# Bug 4 fix: also clean stale .partial and .aria2 files from old snapshots
+for STALE_FILE in "$WORK_DIR"/*.7z "$WORK_DIR"/*.7z.partial "$WORK_DIR"/*.7z.aria2; do
     [ -f "$STALE_FILE" ] || continue
-    if [ "$(basename "$STALE_FILE")" != "$FILENAME" ]; then
+    STALE_BASE=$(basename "$STALE_FILE")
+    # Keep files matching the current snapshot
+    if [ "$STALE_BASE" != "$FILENAME" ] && \
+       [ "$STALE_BASE" != "${FILENAME}.partial" ] && \
+       [ "$STALE_BASE" != "${FILENAME}.aria2" ]; then
         log "Removing stale file from different snapshot: $STALE_FILE"
         rm -f "$STALE_FILE"
     fi
@@ -80,69 +74,81 @@ PARTIAL_FILE="${TARGET_FILE}.partial"
 if [ -f "$TARGET_FILE" ] && [ -s "$TARGET_FILE" ]; then
     log "Final file already exists: $TARGET_FILE ($(stat -c%s "$TARGET_FILE") bytes) — skipping download"
 else
-    # Check for existing partial download
+    # --- Step 3: Download with aria2c (resumable, multi-connection) ---
     if [ -f "$PARTIAL_FILE" ] && [ -s "$PARTIAL_FILE" ]; then
         CURRENT_SIZE=$(stat -c%s "$PARTIAL_FILE")
-        log "Found partial download: $PARTIAL_FILE (${CURRENT_SIZE} bytes so far)"
+        log "Resuming download: $PARTIAL_FILE ($(numfmt --to=iec-i --suffix=B "$CURRENT_SIZE") so far)"
     else
-        log "Starting new download: $LATEST_URL (expected ~60GB)"
+        log "Starting new download: $LATEST_URL"
     fi
 
-    # --- Step 3: Download with curl (resumable) ---
-    # curl -C - automatically resumes by appending to the existing file
-    log "Downloading: $LATEST_URL (curl -C - handles resume automatically)"
+    # Get expected size from server for post-download validation
+    EXPECTED_SIZE=$(curl -sSfLI -A "$AGENT" "$LATEST_URL" | grep -i '^content-length:' | tr -d '[:space:]' | cut -d: -f2) || true
+    if [ -n "$EXPECTED_SIZE" ]; then
+        log "Expected size: $(numfmt --to=iec-i --suffix=B "$EXPECTED_SIZE")"
+    fi
 
-    # Background curl with -C - for automatic resume support
-    curl -A "$AGENT" -C - -o "$PARTIAL_FILE" -f "$LATEST_URL" &
-    CURL_PID=$!
+    # aria2c handles resume via its .aria2 control file — far more reliable than
+    # curl -C - which is a dumb byte-offset append with no corruption detection.
+    # --file-allocation=none avoids pre-allocating 60GB (important on low-RAM systems).
+    log "Downloading with aria2c (4 connections, auto-resume)"
+    ARIA_EXIT=0
+    aria2c \
+        --user-agent="$AGENT" \
+        --max-connection-per-server=4 \
+        --split=4 \
+        --min-split-size=50M \
+        --continue=true \
+        --auto-file-renaming=false \
+        --allow-overwrite=false \
+        --max-tries=10 \
+        --retry-wait=30 \
+        --timeout=300 \
+        --connect-timeout=30 \
+        --lowest-speed-limit=100K \
+        --file-allocation=none \
+        --console-log-level=notice \
+        --summary-interval=60 \
+        --dir="$WORK_DIR" \
+        --out="$(basename "$PARTIAL_FILE")" \
+        "$LATEST_URL" || ARIA_EXIT=$?
 
-    # Background progress logger - polls file size every 20 seconds
-    (
-        START_TIME=$(date +%s)
-        while kill -0 $CURL_PID 2>/dev/null; do
-            sleep 20
-            CURRENT_SIZE=$(stat -c%s "$PARTIAL_FILE" 2>/dev/null || echo 0)
-            ELAPSED=$(($(date +%s) - START_TIME))
-            log "Progress: $(numfmt --to=iec-i --suffix=B $CURRENT_SIZE) downloaded, ${ELAPSED}s elapsed"
-        done
-    ) &
-    LOGGER_PID=$!
-
-    # Wait for curl to complete and capture exit code
-    CURL_EXIT=0
-    wait $CURL_PID || CURL_EXIT=$?
-
-    # Kill the logger
-    kill $LOGGER_PID 2>/dev/null || true
-    wait $LOGGER_PID 2>/dev/null || true
-
-    if [ "$CURL_EXIT" -ne 0 ]; then
+    if [ "$ARIA_EXIT" -ne 0 ]; then
         PARTIAL_SIZE=$(stat -c%s "$PARTIAL_FILE" 2>/dev/null || echo 0)
-        log "ERROR: curl exited with code $CURL_EXIT (downloaded $(numfmt --to=iec-i --suffix=B $PARTIAL_SIZE) so far, will resume next run)"
+        log "ERROR: aria2c exited with code $ARIA_EXIT (downloaded $(numfmt --to=iec-i --suffix=B "$PARTIAL_SIZE") so far, will resume next run)"
         exit 1
     fi
 
-    # Verify download is reasonably complete (at least 1GB for a ~60GB file)
+    # --- Post-download validation ---
     DOWNLOADED_SIZE=$(stat -c%s "$PARTIAL_FILE" 2>/dev/null || echo 0)
-    if [ "$DOWNLOADED_SIZE" -lt 1000000000 ]; then
-        log "ERROR: Download too small ($(numfmt --to=iec-i --suffix=B $DOWNLOADED_SIZE)) — expected ~60GB"
+
+    # Validate against expected Content-Length if available
+    if [ -n "${EXPECTED_SIZE:-}" ] && [ "$EXPECTED_SIZE" -gt 0 ] 2>/dev/null; then
+        if [ "$DOWNLOADED_SIZE" -ne "$EXPECTED_SIZE" ]; then
+            log "ERROR: Size mismatch: downloaded $(numfmt --to=iec-i --suffix=B "$DOWNLOADED_SIZE") but expected $(numfmt --to=iec-i --suffix=B "$EXPECTED_SIZE") — keeping partial for resume"
+            exit 1
+        fi
+        log "Size verified: $(numfmt --to=iec-i --suffix=B "$DOWNLOADED_SIZE") matches Content-Length"
+    elif [ "$DOWNLOADED_SIZE" -lt 1000000000 ]; then
+        log "ERROR: Download too small ($(numfmt --to=iec-i --suffix=B "$DOWNLOADED_SIZE")) — expected ~60GB"
         exit 1
     fi
 
-    # Verify 7z magic bytes before renaming
+    # Verify 7z magic bytes (37 7a bc af 27 1c) — Bug 1 fix
     MAGIC=$(hexdump -n 6 -e '6/1 "%02x"' "$PARTIAL_FILE" 2>/dev/null || true)
-    if [ "$MAGIC" != "377abcaf2710" ]; then
-        log "ERROR: Downloaded file is not a valid 7z archive (magic: $MAGIC) — removing corrupt file"
-        rm -f "$PARTIAL_FILE"
+    if [ "$MAGIC" != "377abcaf271c" ]; then
+        log "ERROR: Not a valid 7z archive (magic: $MAGIC) — removing corrupt file"
+        rm -f "$PARTIAL_FILE" "${PARTIAL_FILE}.aria2"
         exit 1
     fi
 
     # Atomically rename .partial to final filename
     log "Renaming to final filename"
+    rm -f "${PARTIAL_FILE}.aria2"
     mv "$PARTIAL_FILE" "$TARGET_FILE"
 
     ORIG_SIZE=$(stat -c%s "$TARGET_FILE")
-    log "Downloaded ${FILENAME} ($(numfmt --to=iec-i --suffix=B $ORIG_SIZE))"
+    log "Downloaded ${FILENAME} ($(numfmt --to=iec-i --suffix=B "$ORIG_SIZE"))"
 fi
 
 # --- Step 4: Extract ---
@@ -157,7 +163,7 @@ if [ ! -f "$EXTRACTED_FILE" ]; then
 fi
 
 EXTRACTED_SIZE=$(stat -c%s "$EXTRACTED_FILE")
-log "Extracted data.ldb (${EXTRACTED_SIZE} bytes)"
+log "Extracted data.ldb ($(numfmt --to=iec-i --suffix=B "$EXTRACTED_SIZE"))"
 
 # --- Step 5: Compact with mdb_copy ---
 log "Compacting with mdb_copy"
@@ -180,7 +186,7 @@ fi
 
 COMPACTED_SIZE=$(stat -c%s "$COMPACTED_FILE")
 SAVINGS=$(( (EXTRACTED_SIZE - COMPACTED_SIZE) * 100 / EXTRACTED_SIZE ))
-log "Compacted: ${COMPACTED_SIZE} bytes (saved ${SAVINGS}%)"
+log "Compacted: $(numfmt --to=iec-i --suffix=B "$COMPACTED_SIZE") (saved ${SAVINGS}%)"
 
 # --- Step 6: Compress with zstd --rsyncable ---
 COMPRESSED_OUTPUT="${OUTPUT_DIR}/nano-daily.ldb.zst"
@@ -189,7 +195,7 @@ zstd -3 --rsyncable -f "$COMPACTED_FILE" -o "$COMPRESSED_OUTPUT"
 
 COMP_SIZE=$(stat -c%s "$COMPRESSED_OUTPUT")
 SHA256=$(sha256sum "$COMPRESSED_OUTPUT" | cut -d' ' -f1)
-log "Compressed to ${COMPRESSED_OUTPUT} (${COMP_SIZE} bytes, sha256=${SHA256})"
+log "Compressed to ${COMPRESSED_OUTPUT} ($(numfmt --to=iec-i --suffix=B "$COMP_SIZE"), sha256=${SHA256})"
 
 # --- Step 7: Create torrent and publish ---
 log "Creating torrent and publishing to DHT"
