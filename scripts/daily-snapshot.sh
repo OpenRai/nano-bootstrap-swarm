@@ -74,12 +74,13 @@ rm -f "${WORK_DIR}/data.ldb"
 
 # Check for existing download
 if [ -f "$TARGET_FILE" ] && [ -s "$TARGET_FILE" ]; then
-    log "Found existing download: $TARGET_FILE"
+    CURRENT_SIZE=$(stat -c%s "$TARGET_FILE")
+    log "Found existing download: $TARGET_FILE (${CURRENT_SIZE} bytes so far)"
     # Always clean up stale extraction artifacts when re-running
     rm -rf "${WORK_DIR:?}/compacted"
     rm -f "${WORK_DIR}/data.ldb"
 else
-    log "Starting new download: $LATEST_URL"
+    log "Starting new download: $LATEST_URL (expected ~60GB)"
 fi
 
 # --- Step 3: Download with rclone (resumable) ---
