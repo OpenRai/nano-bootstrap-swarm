@@ -212,7 +212,7 @@ mkdir -p "$COMPACTED_DIR"
 # Remove any stale compacted files first
 rm -f "${COMPACTED_DIR}/data.ldb"
 
-if ! mdb_copy "$EXTRACTED_FILE" "$COMPACTED_DIR" 2>&1; then
+if ! mdb_copy "$WORK_DIR" "$COMPACTED_DIR" 2>&1; then
     log "ERROR: mdb_copy failed - $EXTRACTED_FILE may be corrupted"
     exit 1
 fi
