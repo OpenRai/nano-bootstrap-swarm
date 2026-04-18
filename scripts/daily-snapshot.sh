@@ -72,13 +72,13 @@ done
 rm -rf "${WORK_DIR:?}/compacted"
 rm -f "${WORK_DIR}/data.ldb"
 
-# Check for existing download
-if [ -f "$TARGET_FILE" ] && [ -s "$TARGET_FILE" ]; then
-    CURRENT_SIZE=$(stat -c%s "$TARGET_FILE")
-    log "Found existing download: $TARGET_FILE (${CURRENT_SIZE} bytes so far)"
-    # Always clean up stale extraction artifacts when re-running
-    rm -rf "${WORK_DIR:?}/compacted"
-    rm -f "${WORK_DIR}/data.ldb"
+# Use .partial file for download, then atomically rename on success
+PARTIAL_FILE="${TARGET_FILE}.partial"
+
+# Check for existing partial download
+if [ -f "$PARTIAL_FILE" ] && [ -s "$PARTIAL_FILE" ]; then
+    CURRENT_SIZE=$(stat -c%s "$PARTIAL_FILE")
+    log "Found partial download: $PARTIAL_FILE (${CURRENT_SIZE} bytes so far)"
 else
     log "Starting new download: $LATEST_URL (expected ~60GB)"
 fi
@@ -87,24 +87,24 @@ fi
 log "Starting download: $LATEST_URL (expected ~60GB)"
 
 # If partial file exists, use curl with Range header for proper resume
-if [ -f "$TARGET_FILE" ] && [ -s "$TARGET_FILE" ]; then
-    CURRENT_SIZE=$(stat -c%s "$TARGET_FILE")
+if [ -f "$PARTIAL_FILE" ] && [ -s "$PARTIAL_FILE" ]; then
+    CURRENT_SIZE=$(stat -c%s "$PARTIAL_FILE")
     log "Resuming from byte $CURRENT_SIZE using curl"
-    curl -# -A "$AGENT" -H "Range: bytes=$CURRENT_SIZE-" -o "$TARGET_FILE" "$LATEST_URL" &
+    curl -# -A "$AGENT" -H "Range: bytes=$CURRENT_SIZE-" -o "$PARTIAL_FILE" "$LATEST_URL" &
     CURL_PID=$!
 else
     log "Starting fresh download"
-    curl -# -A "$AGENT" -o "$TARGET_FILE" "$LATEST_URL" &
+    curl -# -A "$AGENT" -o "$PARTIAL_FILE" "$LATEST_URL" &
     CURL_PID=$!
 fi
 
 # Background progress logger - polls file size every 20 seconds
 (
-    LAST_SIZE=$(stat -c%s "$TARGET_FILE" 2>/dev/null || echo 0)
+    LAST_SIZE=$(stat -c%s "$PARTIAL_FILE" 2>/dev/null || echo 0)
     START_TIME=$(date +%s)
     while kill -0 $CURL_PID 2>/dev/null; do
         sleep 20
-        CURRENT_SIZE=$(stat -c%s "$TARGET_FILE" 2>/dev/null || echo 0)
+        CURRENT_SIZE=$(stat -c%s "$PARTIAL_FILE" 2>/dev/null || echo 0)
         ELAPSED=$(($(date +%s) - START_TIME))
         log "Progress: $(numfmt --to=iec-i --suffix=B $CURRENT_SIZE) downloaded, ${ELAPSED}s elapsed"
     done
@@ -118,10 +118,14 @@ wait $CURL_PID
 kill $LOGGER_PID 2>/dev/null || true
 
 # Verify download completed
-if [ ! -f "$TARGET_FILE" ] || [ $(stat -c%s "$TARGET_FILE") -lt 1000000 ]; then
+if [ ! -f "$PARTIAL_FILE" ] || [ $(stat -c%s "$PARTIAL_FILE") -lt 1000000 ]; then
     log "ERROR: Download failed or file too small"
     exit 1
 fi
+
+# Atomically rename .partial to final filename
+log "Renaming to final filename"
+mv "$PARTIAL_FILE" "$TARGET_FILE"
 
 ORIG_SIZE=$(stat -c%s "$TARGET_FILE")
 log "Downloaded ${FILENAME} (${ORIG_SIZE} bytes)"
