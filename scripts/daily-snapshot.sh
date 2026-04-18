@@ -88,23 +88,15 @@ else
     fi
 
     # --- Step 3: Download with curl (resumable) ---
-    log "Starting download: $LATEST_URL (expected ~60GB)"
+    # curl -C - automatically resumes by appending to the existing file
+    log "Downloading: $LATEST_URL (curl -C - handles resume automatically)"
 
-    # If partial file exists, use curl with Range header for proper resume
-    if [ -f "$PARTIAL_FILE" ] && [ -s "$PARTIAL_FILE" ]; then
-        CURRENT_SIZE=$(stat -c%s "$PARTIAL_FILE")
-        log "Resuming from byte $CURRENT_SIZE using curl"
-        curl -A "$AGENT" -H "Range: bytes=$CURRENT_SIZE-" -o "$PARTIAL_FILE" "$LATEST_URL" &
-        CURL_PID=$!
-    else
-        log "Starting fresh download"
-        curl -A "$AGENT" -o "$PARTIAL_FILE" "$LATEST_URL" &
-        CURL_PID=$!
-    fi
+    # Background curl with -C - for automatic resume support
+    curl -A "$AGENT" -C - -o "$PARTIAL_FILE" -f "$LATEST_URL" &
+    CURL_PID=$!
 
     # Background progress logger - polls file size every 20 seconds
     (
-        LAST_SIZE=$(stat -c%s "$PARTIAL_FILE" 2>/dev/null || echo 0)
         START_TIME=$(date +%s)
         while kill -0 $CURL_PID 2>/dev/null; do
             sleep 20
@@ -115,15 +107,32 @@ else
     ) &
     LOGGER_PID=$!
 
-    # Wait for curl to complete
-    wait $CURL_PID
+    # Wait for curl to complete and capture exit code
+    CURL_EXIT=0
+    wait $CURL_PID || CURL_EXIT=$?
 
     # Kill the logger
     kill $LOGGER_PID 2>/dev/null || true
+    wait $LOGGER_PID 2>/dev/null || true
 
-    # Verify download completed
-    if [ ! -f "$PARTIAL_FILE" ] || [ $(stat -c%s "$PARTIAL_FILE") -lt 1000000 ]; then
-        log "ERROR: Download failed or file too small"
+    if [ "$CURL_EXIT" -ne 0 ]; then
+        PARTIAL_SIZE=$(stat -c%s "$PARTIAL_FILE" 2>/dev/null || echo 0)
+        log "ERROR: curl exited with code $CURL_EXIT (downloaded $(numfmt --to=iec-i --suffix=B $PARTIAL_SIZE) so far, will resume next run)"
+        exit 1
+    fi
+
+    # Verify download is reasonably complete (at least 1GB for a ~60GB file)
+    DOWNLOADED_SIZE=$(stat -c%s "$PARTIAL_FILE" 2>/dev/null || echo 0)
+    if [ "$DOWNLOADED_SIZE" -lt 1000000000 ]; then
+        log "ERROR: Download too small ($(numfmt --to=iec-i --suffix=B $DOWNLOADED_SIZE)) — expected ~60GB"
+        exit 1
+    fi
+
+    # Verify 7z magic bytes before renaming
+    MAGIC=$(hexdump -n 6 -e '6/1 "%02x"' "$PARTIAL_FILE" 2>/dev/null || true)
+    if [ "$MAGIC" != "377abcaf2710" ]; then
+        log "ERROR: Downloaded file is not a valid 7z archive (magic: $MAGIC) — removing corrupt file"
+        rm -f "$PARTIAL_FILE"
         exit 1
     fi
 
@@ -132,8 +141,7 @@ else
     mv "$PARTIAL_FILE" "$TARGET_FILE"
 
     ORIG_SIZE=$(stat -c%s "$TARGET_FILE")
-    log "Downloaded ${FILENAME} (${ORIG_SIZE} bytes)"
-fi
+    log "Downloaded ${FILENAME} ($(numfmt --to=iec-i --suffix=B $ORIG_SIZE))"
 fi
 
 # --- Step 4: Extract ---
@@ -187,7 +195,7 @@ log "Creating torrent and publishing to DHT"
 
 cd /opt/nano-bootstrap-swarm
 source .venv/bin/activate
-if [ -z "$DHT_PRIVATE_KEY" ] && [ -f /home/openrai/.env ]; then
+if [ -z "${DHT_PRIVATE_KEY:-}" ] && [ -f /home/openrai/.env ]; then
     source /home/openrai/.env
 fi
 
