@@ -69,7 +69,23 @@ META_FILE="${OUTPUT_DIR}/snapshot-meta.json"
 # Use .partial file for download, then atomically rename on success
 PARTIAL_FILE="${TARGET_FILE}.partial"
 
-# If the final .7z already exists, skip download entirely
+# --- Early exit: if metadata says this filename is already fully processed, skip everything ---
+if [ -f "$META_FILE" ] && [ -f "$STABLE_FILE" ] && [ -s "$STABLE_FILE" ]; then
+    PREV_FILENAME=$(python3 -c "import json; print(json.load(open('$META_FILE')).get('original_filename',''))" 2>/dev/null || true)
+    PREV_TORRENT=$(python3 -c "import json; print(json.load(open('$META_FILE')).get('torrent_info_hash',''))" 2>/dev/null || true)
+    if [ "$PREV_FILENAME" = "$FILENAME" ] && [ -n "$PREV_TORRENT" ]; then
+        log "Snapshot unchanged (${FILENAME}, torrent ${PREV_TORRENT}) — nothing to do"
+        log "=== Daily snapshot pipeline complete (no-op) ==="
+        exit 0
+    fi
+    # Metadata matches but publish didn't complete — ensure TARGET_FILE exists so we skip download
+    if [ "$PREV_FILENAME" = "$FILENAME" ] && [ ! -f "$TARGET_FILE" ]; then
+        log "Previous download exists as ${STABLE_FILE} — linking back to tmp/"
+        ln -f "$STABLE_FILE" "$TARGET_FILE" 2>/dev/null || ln -sf "$STABLE_FILE" "$TARGET_FILE"
+    fi
+fi
+
+# If the final .7z already exists in tmp/, skip download entirely
 if [ -f "$TARGET_FILE" ] && [ -s "$TARGET_FILE" ]; then
     log "Final file already exists: $TARGET_FILE ($(stat -c%s "$TARGET_FILE") bytes) — skipping download"
 else
@@ -189,17 +205,7 @@ else
     log "Downloaded ${FILENAME} ($(numfmt --to=iec-i --suffix=B "$ORIG_SIZE"))"
 fi
 
-# --- Step 4: Check if snapshot changed, symlink to stable name ---
-
-# Quick check: if meta already records this exact filename, skip everything
-if [ -f "$META_FILE" ]; then
-    PREV_FILENAME=$(python3 -c "import json; print(json.load(open('$META_FILE')).get('original_filename',''))" 2>/dev/null || true)
-    if [ "$PREV_FILENAME" = "$FILENAME" ] && [ -f "$STABLE_FILE" ]; then
-        log "Snapshot unchanged (${FILENAME} matches previous) — skipping publish"
-        log "=== Daily snapshot pipeline complete (no-op) ==="
-        exit 0
-    fi
-fi
+# --- Step 4: Symlink to stable name, compute provenance ---
 
 # New snapshot — compute SHA-256 for provenance record
 log "Computing SHA-256 of ${FILENAME}"
@@ -213,7 +219,7 @@ log "SHA-256: ${SHA256}"
 log "Symlinking ${FILENAME} → ${STABLE_NAME}"
 ln -sf "$TARGET_FILE" "$STABLE_FILE"
 
-# Write provenance metadata
+# Write provenance metadata (written BEFORE publish; updated with torrent hash after)
 python3 -c "
 import json, datetime
 json.dump({
@@ -234,10 +240,24 @@ if [ -z "${DHT_PRIVATE_KEY:-}" ] && [ -f "$HOME/.env" ]; then
     source "$HOME/.env"
 fi
 
-python -m producer.cli publish \
+PUBLISH_OUTPUT=$(python -m producer.cli publish \
     --private-key "$DHT_PRIVATE_KEY" \
     --snapshot-file "$STABLE_FILE" \
-    --web-seed-url "$WEB_SEED_URL"
+    --web-seed-url "$WEB_SEED_URL")
+
+echo "$PUBLISH_OUTPUT"
+
+# Extract info hash and update metadata so future runs skip
+TORRENT_HASH=$(echo "$PUBLISH_OUTPUT" | grep -oP '(?<=Info-hash \(v2\): ).*' || true)
+if [ -n "$TORRENT_HASH" ]; then
+    python3 -c "
+import json
+m = json.load(open('$META_FILE'))
+m['torrent_info_hash'] = '$TORRENT_HASH'
+json.dump(m, open('$META_FILE', 'w'), indent=2)
+"
+    log "Updated metadata with torrent hash: $TORRENT_HASH"
+fi
 
 # --- Step 6: Restart seeder to pick up new torrent ---
 if systemctl --user is-enabled nano-seed.service &>/dev/null; then
