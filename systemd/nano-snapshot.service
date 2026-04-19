@@ -13,6 +13,6 @@ ExecStart=%h/nano-bootstrap-swarm/scripts/daily-snapshot.sh
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=nano-snapshot
-# 60GB download + extraction + compaction can take many hours
+# 57GB download + torrent hashing + DHT publish can take many hours
 TimeoutStartSec=43200
 TimeoutStopSec=300
