@@ -83,6 +83,9 @@ def _process_mutable_item_alert(
             value_bytes = bencodepy.encode(value_data)
         elif isinstance(value_data, (bytes, bytearray)):
             value_bytes = bytes(value_data)
+        elif isinstance(value_data, str):
+            # dht_put_mutable_item stores as string entry; decode back to bytes
+            value_bytes = value_data.encode("latin-1")
         else:
             logger.warning(f"Unexpected value type from DHT: {type(value_data)}")
             return None

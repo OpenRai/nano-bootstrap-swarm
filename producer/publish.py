@@ -8,7 +8,7 @@ from pathlib import Path
 
 import libtorrent as lt
 
-from shared.bep46 import build_dht_value, sign_mutable_item
+from shared.bep46 import build_dht_value
 from shared.nano_identity import compute_bep46_target_id, derive_nano_address
 
 STATE_FILE = "publisher_state.json"
@@ -52,23 +52,23 @@ def publish_to_dht(
     print(f"Publishing seq={seq}, info_hash={info_hash_hex}, salt='{salt}'")
 
     value_bytes = build_dht_value(info_hash_hex, piece_size)
-    signature, derived_pub = sign_mutable_item(private_key_hex, value_bytes, seq, salt=salt)
 
-    if derived_pub != pub_key_bytes:
-        raise PublishError("Derived public key mismatch")
-
-    print(f"Signature: {signature.hex()}")
     print(f"Value size: {len(value_bytes)} bytes")
 
     if dry_run:
         print("DRY RUN — not publishing to DHT")
         return {
             "seq": seq,
-            "info_hash": info_hash_hex,
-            "signature": signature.hex(),
+            "info_hash_hex": info_hash_hex,
             "nano_address": nano_address,
             "dry_run": True,
         }
+
+    # Build 64-byte ed25519 secret key (seed + pubkey) for libtorrent
+    import nacl.signing
+
+    sk = nacl.signing.SigningKey(bytes.fromhex(private_key_hex))
+    secret_key_64 = bytes(sk._signing_key)  # 64 bytes: seed || pubkey
 
     settings = {
         "enable_dht": True,
@@ -88,12 +88,13 @@ def publish_to_dht(
     print("Waiting for DHT to bootstrap...")
     time.sleep(30)
 
-    pubkey_list = [b for b in pub_key_bytes]
-
-    def put_callback(_entry, sign, _new_seq, _new_salt):
-        sign[:] = signature
-
-    ses.dht_put_item(pubkey_list, put_callback, salt.encode("utf-8"))
+    # dht_put_mutable_item handles seq and signing internally
+    ses.dht_put_mutable_item(
+        secret_key_64.decode("latin-1"),
+        pub_key_bytes.decode("latin-1") if isinstance(pub_key_bytes, bytes) else pub_key_bytes,
+        value_bytes.decode("latin-1") if isinstance(value_bytes, bytes) else value_bytes,
+        salt,
+    )
 
     print("Waiting for DHT put confirmation...")
     deadline = time.time() + DHT_PUBLISH_TIMEOUT
@@ -120,8 +121,7 @@ def publish_to_dht(
     print(f"Published seq={seq} to DHT")
     return {
         "seq": seq,
-        "info_hash": info_hash_hex,
-        "signature": signature.hex(),
+        "info_hash_hex": info_hash_hex,
         "nano_address": nano_address,
         "confirmed": confirmed,
     }
