@@ -189,27 +189,29 @@ else
     log "Downloaded ${FILENAME} ($(numfmt --to=iec-i --suffix=B "$ORIG_SIZE"))"
 fi
 
-# --- Step 4: Compute SHA-256 and rename to stable torrent name ---
-log "Computing SHA-256 of ${FILENAME}"
-SHA256=$(sha256sum "$TARGET_FILE" | cut -d' ' -f1)
-FILE_SIZE=$(stat -c%s "$TARGET_FILE")
-log "SHA-256: ${SHA256}"
+# --- Step 4: Check if snapshot changed, symlink to stable name ---
 
-# Check if the snapshot is unchanged from what we already published
+# Quick check: if meta already records this exact filename, skip everything
 if [ -f "$META_FILE" ]; then
-    PREV_SHA256=$(python3 -c "import json; print(json.load(open('$META_FILE')).get('sha256',''))" 2>/dev/null || true)
-    if [ "$PREV_SHA256" = "$SHA256" ]; then
-        log "Snapshot unchanged (sha256 matches previous) — skipping publish"
-        # Clean up the download from tmp since stable file already exists
-        rm -f "$TARGET_FILE"
+    PREV_FILENAME=$(python3 -c "import json; print(json.load(open('$META_FILE')).get('original_filename',''))" 2>/dev/null || true)
+    if [ "$PREV_FILENAME" = "$FILENAME" ] && [ -f "$STABLE_FILE" ]; then
+        log "Snapshot unchanged (${FILENAME} matches previous) — skipping publish"
         log "=== Daily snapshot pipeline complete (no-op) ==="
         exit 0
     fi
 fi
 
-# Rename timestamped file to stable name for torrent consistency
-log "Renaming ${FILENAME} → ${STABLE_NAME}"
-mv "$TARGET_FILE" "$STABLE_FILE"
+# New snapshot — compute SHA-256 for provenance record
+log "Computing SHA-256 of ${FILENAME}"
+SHA256=$(sha256sum "$TARGET_FILE" | cut -d' ' -f1)
+FILE_SIZE=$(stat -c%s "$TARGET_FILE")
+log "SHA-256: ${SHA256}"
+
+# Symlink the timestamped file to the stable torrent name.
+# The original stays in tmp/ so future runs can detect it by filename.
+# The torrent and seeder use the stable symlink path.
+log "Symlinking ${FILENAME} → ${STABLE_NAME}"
+ln -sf "$TARGET_FILE" "$STABLE_FILE"
 
 # Write provenance metadata
 python3 -c "
