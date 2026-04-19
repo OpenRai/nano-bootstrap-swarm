@@ -209,12 +209,20 @@ COMPACTED_DIR="${WORK_DIR}/compacted"
 mkdir -p "$COMPACTED_DIR"
 
 # Remove any stale compacted files first
-rm -f "${COMPACTED_DIR}/data.ldb"
+rm -f "${COMPACTED_DIR}/data.mdb" "${COMPACTED_DIR}/data.ldb"
+
+# LMDB tools expect data.mdb, but Nano names its database data.ldb
+ln -sf data.ldb "${WORK_DIR}/data.mdb"
 
 if ! mdb_copy "$WORK_DIR" "$COMPACTED_DIR" 2>&1; then
+    rm -f "${WORK_DIR}/data.mdb"
     log "ERROR: mdb_copy failed - $EXTRACTED_FILE may be corrupted"
     exit 1
 fi
+rm -f "${WORK_DIR}/data.mdb"
+
+# mdb_copy outputs data.mdb — rename to data.ldb for consistency
+mv "${COMPACTED_DIR}/data.mdb" "${COMPACTED_DIR}/data.ldb"
 
 COMPACTED_FILE="${COMPACTED_DIR}/data.ldb"
 if [ ! -f "$COMPACTED_FILE" ]; then
