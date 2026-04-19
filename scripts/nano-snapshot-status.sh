@@ -18,11 +18,11 @@ EOF
     exit 1
 }
 
-LINES=20
+LOG_LINES=20
 if [[ "${1:-}" =~ ^[0-9]+$ ]]; then
-    LINES="$1"
+    LOG_LINES="$1"
 fi
 
 systemctl --user list-timers nano-snapshot --no-pager
 echo
-journalctl --user -u nano-snapshot -n "$LINES" --no-pager
+journalctl --user -u nano-snapshot -n "$LOG_LINES" --no-pager

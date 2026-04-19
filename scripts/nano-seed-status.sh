@@ -5,7 +5,7 @@ set -euo pipefail
 
 DATA_DIR="${OUTPUT_DIR:-$HOME/nano-snapshots}"
 STATS_FILE="$DATA_DIR/seeder-stats.json"
-LINES="${1:-10}"
+LOG_LINES="${1:-10}"
 
 echo "=== Nano Torrent Seeder ==="
 echo
@@ -48,4 +48,4 @@ fi
 
 echo
 echo "=== Recent Logs ==="
-journalctl --user -u nano-seed -n "$LINES" --no-pager 2>/dev/null || echo "  (no journal entries)"
+journalctl --user -u nano-seed -n "$LOG_LINES" --no-pager 2>/dev/null || echo "  (no journal entries)"
