@@ -1,5 +1,5 @@
 ARG AUTHORITY_PUBKEY
-FROM python:3 AS builder-cpp
+FROM python:3.13 AS builder-cpp
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
@@ -31,7 +31,7 @@ RUN mkdir build && cd build && \
     ldconfig /usr/local/lib
 
 
-FROM python:3
+FROM python:3.13
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     zstd \
