@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import subprocess
 import sys
 from pathlib import Path
 
@@ -15,23 +14,6 @@ from producer.publish import DEFAULT_SALT, publish_to_dht  # noqa: E402
 from producer.torrent_create import create_torrent  # noqa: E402
 
 
-def cmd_snapshot(args: argparse.Namespace) -> None:
-    env = os.environ.copy()
-    if args.ledger_path:
-        env["NANO_LEDGER_PATH"] = args.ledger_path
-    if args.output_dir:
-        env["OUTPUT_DIR"] = args.output_dir
-
-    snapshot_script = SCRIPT_DIR / "snapshot.sh"
-    result = subprocess.run(
-        ["bash", str(snapshot_script)],
-        env=env,
-    )
-    if result.returncode != 0:
-        print(f"ERROR: snapshot.sh exited with code {result.returncode}", file=sys.stderr)
-        sys.exit(result.returncode)
-
-
 def cmd_publish(args: argparse.Namespace) -> None:
     private_key = args.private_key or os.environ.get("DHT_PRIVATE_KEY")
     if not private_key:
@@ -39,8 +21,20 @@ def cmd_publish(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     web_seed_url = args.web_seed_url or os.environ.get("WEB_SEED_URL", "")
-    output_dir = args.output_dir or os.environ.get("OUTPUT_DIR", ".")
-    snapshot_file = os.path.join(output_dir, "nano-daily.ldb.zst")
+
+    # Resolve snapshot file path
+    snapshot_file = args.snapshot_file
+    if not snapshot_file:
+        output_dir = args.output_dir or os.environ.get("OUTPUT_DIR", ".")
+        candidate = os.path.join(output_dir, "nano-ledger-snapshot.7z")
+        if os.path.exists(candidate):
+            snapshot_file = candidate
+        else:
+            print(
+                f"ERROR: No --snapshot-file given and {candidate} not found",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
     if not os.path.exists(snapshot_file):
         print(f"ERROR: Snapshot file not found: {snapshot_file}", file=sys.stderr)
@@ -67,62 +61,52 @@ def cmd_publish(args: argparse.Namespace) -> None:
     print(json.dumps(result, indent=2))
 
 
-def cmd_full(args: argparse.Namespace) -> None:
-    cmd_snapshot(args)
-    cmd_publish(args)
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Nano P2P Snapshot Producer — extract, compress, and publish ledger snapshots"
+        description="Nano P2P Snapshot Producer — create torrent and publish to DHT"
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    common_args = argparse.ArgumentParser(add_help=False)
-    common_args.add_argument(
-        "--ledger-path", default=None, help="Path to data.ldb (overrides NANO_LEDGER_PATH env)"
+    pub_parser = subparsers.add_parser("publish", help="Create torrent and publish to DHT")
+    pub_parser.add_argument(
+        "--snapshot-file",
+        default=None,
+        help="Path to snapshot file (e.g. nano-ledger-snapshot.7z). "
+        "Falls back to OUTPUT_DIR/nano-ledger-snapshot.7z",
     )
-    common_args.add_argument(
-        "--output-dir", default=None, help="Output directory (overrides OUTPUT_DIR env)"
+    pub_parser.add_argument(
+        "--output-dir",
+        default=None,
+        help="Output directory for auto-detecting snapshot file (overrides OUTPUT_DIR env)",
     )
-    common_args.add_argument(
+    pub_parser.add_argument(
         "--private-key",
         default=None,
         help="Ed25519 private key hex (overrides DHT_PRIVATE_KEY env)",
     )
-    common_args.add_argument(
-        "--web-seed-url", default=None, help="Web seed URL (overrides WEB_SEED_URL env)"
+    pub_parser.add_argument(
+        "--web-seed-url",
+        default=None,
+        help="Web seed URL (overrides WEB_SEED_URL env)",
     )
-    common_args.add_argument(
+    pub_parser.add_argument(
         "--piece-size",
         type=int,
         default=32 * 1024 * 1024,
         help="Torrent piece size in bytes (default: 32 MiB)",
     )
-    common_args.add_argument(
-        "--state-file", default="publisher_state.json", help="Path to publisher state file"
+    pub_parser.add_argument(
+        "--state-file",
+        default="publisher_state.json",
+        help="Path to publisher state file",
     )
-    common_args.add_argument("--dry-run", action="store_true", help="Don't publish to DHT")
-    common_args.add_argument(
+    pub_parser.add_argument("--dry-run", action="store_true", help="Don't publish to DHT")
+    pub_parser.add_argument(
         "--salt",
         default=os.environ.get("DHT_SALT", DEFAULT_SALT),
         help=f"DHT salt (env DHT_SALT, default: {DEFAULT_SALT})",
     )
-
-    snap_parser = subparsers.add_parser(
-        "snapshot", parents=[common_args], help="Extract and compress ledger"
-    )
-    snap_parser.set_defaults(func=cmd_snapshot)
-
-    pub_parser = subparsers.add_parser(
-        "publish", parents=[common_args], help="Create torrent and publish to DHT"
-    )
     pub_parser.set_defaults(func=cmd_publish)
-
-    full_parser = subparsers.add_parser(
-        "full", parents=[common_args], help="Run full pipeline: snapshot then publish"
-    )
-    full_parser.set_defaults(func=cmd_full)
 
     args = parser.parse_args()
     args.func(args)

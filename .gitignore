@@ -49,3 +49,4 @@ htmlcov/
 .dolt/
 *.db
 .beads-credential-key
+uv.lock

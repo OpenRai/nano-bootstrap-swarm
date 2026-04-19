@@ -63,8 +63,10 @@ for STALE_FILE in "$WORK_DIR"/*.7z "$WORK_DIR"/*.7z.partial "$WORK_DIR"/*.7z.ari
     fi
 done
 
-# Clean up previous extraction artifacts
-rm -f "${WORK_DIR}/data.ldb"
+# Stable name for torrenting (changing filenames = new info hash = no delta reuse)
+STABLE_NAME="nano-ledger-snapshot.7z"
+STABLE_FILE="${OUTPUT_DIR}/${STABLE_NAME}"
+META_FILE="${OUTPUT_DIR}/snapshot-meta.json"
 
 # Use .partial file for download, then atomically rename on success
 PARTIAL_FILE="${TARGET_FILE}.partial"
@@ -189,31 +191,41 @@ else
     log "Downloaded ${FILENAME} ($(numfmt --to=iec-i --suffix=B "$ORIG_SIZE"))"
 fi
 
-# --- Step 4: Extract ---
-log "Extracting ${FILENAME}"
-7z x -mmt=3 -y -o"$WORK_DIR" "$TARGET_FILE" > /dev/null
+# --- Step 4: Compute SHA-256 and rename to stable torrent name ---
+log "Computing SHA-256 of ${FILENAME}"
+SHA256=$(sha256sum "$TARGET_FILE" | cut -d' ' -f1)
+FILE_SIZE=$(stat -c%s "$TARGET_FILE")
+log "SHA-256: ${SHA256}"
 
-EXTRACTED_FILE="${WORK_DIR}/data.ldb"
-if [ ! -f "$EXTRACTED_FILE" ]; then
-    log "ERROR: Extraction failed — data.ldb not found"
-    exit 1
+# Check if the snapshot is unchanged from what we already published
+if [ -f "$META_FILE" ]; then
+    PREV_SHA256=$(python3 -c "import json; print(json.load(open('$META_FILE')).get('sha256',''))" 2>/dev/null || true)
+    if [ "$PREV_SHA256" = "$SHA256" ]; then
+        log "Snapshot unchanged (sha256 matches previous) — skipping publish"
+        # Clean up the download from tmp since stable file already exists
+        rm -f "$TARGET_FILE"
+        log "=== Daily snapshot pipeline complete (no-op) ==="
+        exit 0
+    fi
 fi
 
-EXTRACTED_SIZE=$(stat -c%s "$EXTRACTED_FILE")
-log "Extracted data.ldb ($(numfmt --to=iec-i --suffix=B "$EXTRACTED_SIZE"))"
+# Rename timestamped file to stable name for torrent consistency
+log "Renaming ${FILENAME} → ${STABLE_NAME}"
+mv "$TARGET_FILE" "$STABLE_FILE"
 
-# --- Step 5: Compress with zstd --rsyncable ---
-# Skipping mdb_copy compaction — the upstream snapshot is already compacted
-# (121GB in, 121GB out, 0% savings). Compress the extracted file directly.
-COMPRESSED_OUTPUT="${OUTPUT_DIR}/nano-daily.ldb.zst"
-log "Compressing with zstd -3 --rsyncable"
-zstd -3 --rsyncable -f "$EXTRACTED_FILE" -o "$COMPRESSED_OUTPUT"
+# Write provenance metadata
+python3 -c "
+import json, datetime
+json.dump({
+    'original_filename': '$FILENAME',
+    'sha256': '$SHA256',
+    'size_bytes': $FILE_SIZE,
+    'downloaded_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+}, open('$META_FILE', 'w'), indent=2)
+"
+log "Wrote ${META_FILE}"
 
-COMP_SIZE=$(stat -c%s "$COMPRESSED_OUTPUT")
-SHA256=$(sha256sum "$COMPRESSED_OUTPUT" | cut -d' ' -f1)
-log "Compressed to ${COMPRESSED_OUTPUT} ($(numfmt --to=iec-i --suffix=B "$COMP_SIZE"), sha256=${SHA256})"
-
-# --- Step 7: Create torrent and publish ---
+# --- Step 5: Create torrent and publish to DHT ---
 log "Creating torrent and publishing to DHT"
 
 cd "$REPO_DIR"
@@ -224,7 +236,7 @@ fi
 
 python -m producer.cli publish \
     --private-key "$DHT_PRIVATE_KEY" \
-    --output-dir "$OUTPUT_DIR" \
+    --snapshot-file "$STABLE_FILE" \
     --web-seed-url "$WEB_SEED_URL"
 
 log "=== Daily snapshot pipeline complete ==="

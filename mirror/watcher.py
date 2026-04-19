@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import signal
+import subprocess
 import sys
 import time
 from enum import Enum
@@ -80,6 +81,7 @@ class MirrorWatcher:
         web_seed_url: str = WEB_SEED_URL,
         salt: str = DEFAULT_SALT,
         download_timeout: int = DEFAULT_DOWNLOAD_TIMEOUT,
+        extract: bool = False,
     ):
         self.authority_pubkey_hex = authority_pubkey_hex
         self.data_dir = data_dir
@@ -87,6 +89,7 @@ class MirrorWatcher:
         self.web_seed_url = web_seed_url
         self.salt = salt
         self.download_timeout = download_timeout
+        self.extract = extract
 
         self.pub_key_bytes = bytes.fromhex(self.authority_pubkey_hex)
         self.nano_address = public_key_to_nano_address(self.pub_key_bytes)
@@ -179,6 +182,16 @@ class MirrorWatcher:
         if status == DownloadStatus.SEEDING:
             torrent_name = self.state.current_torrent_name or "unknown"
             logger.info(f"Leecher: download complete, seeding. File: {torrent_name}")
+
+            if self.extract:
+                # Stop libtorrent BEFORE extraction to free memory — 7z
+                # decompression can be memory-hungry on large archives.
+                logger.info("Stopping libtorrent session before extraction...")
+                self.stop()
+
+                archive_path = Path(self.data_dir) / torrent_name
+                self._extract_and_cleanup(archive_path)
+
             sys.exit(0)
         elif status == DownloadStatus.TIMEOUT:
             logger.error(f"Leecher: download timed out after {self.download_timeout}s")
@@ -186,6 +199,45 @@ class MirrorWatcher:
         else:
             logger.error("Leecher: download failed")
             sys.exit(1)
+
+    def _extract_and_cleanup(self, archive_path: Path) -> None:
+        """Extract .7z archive in-place, then delete the archive."""
+        if not archive_path.exists():
+            logger.error(f"Archive not found for extraction: {archive_path}")
+            sys.exit(1)
+
+        archive_size = archive_path.stat().st_size
+        logger.info(
+            f"Extracting {archive_path.name} "
+            f"({archive_size / (1024**3):.1f} GiB)..."
+        )
+
+        try:
+            subprocess.run(
+                ["7z", "x", "-mmt=3", "-y", f"-o{archive_path.parent}", str(archive_path)],
+                check=True,
+                stdout=subprocess.DEVNULL,
+            )
+        except FileNotFoundError:
+            logger.error("7z command not found — install p7zip-full to use --extract")
+            sys.exit(1)
+        except subprocess.CalledProcessError as e:
+            logger.error(f"7z extraction failed with exit code {e.returncode}")
+            sys.exit(1)
+
+        # Verify data.ldb exists
+        extracted = archive_path.parent / "data.ldb"
+        if not extracted.exists():
+            logger.error("Extraction produced no data.ldb — archive may be corrupt")
+            sys.exit(1)
+
+        extracted_size = extracted.stat().st_size
+        logger.info(
+            f"Extracted data.ldb ({extracted_size / (1024**3):.1f} GiB) — "
+            f"removing archive {archive_path.name}"
+        )
+        archive_path.unlink()
+        logger.info("Extraction complete, archive deleted.")
 
     def _run_loop(self) -> None:
         while self._running:
@@ -379,6 +431,11 @@ def main() -> None:
         default=DEFAULT_DOWNLOAD_TIMEOUT,
         help="Download timeout in seconds (0=infinite, default: 0; auto-set to 3600 in leech mode)",
     )
+    parser.add_argument(
+        "--extract",
+        action="store_true",
+        help="Extract .7z after download and delete archive (only in --once mode)",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -407,6 +464,11 @@ def main() -> None:
     if args.once and download_timeout == 0:
         download_timeout = 3600
 
+    extract = args.extract
+    if extract and not args.once:
+        logger.warning("--extract is only supported in --once mode; ignoring")
+        extract = False
+
     watcher = MirrorWatcher(
         authority_pubkey_hex=pubkey,
         data_dir=args.data_dir,
@@ -414,6 +476,7 @@ def main() -> None:
         web_seed_url=args.web_seed_url,
         salt=args.salt,
         download_timeout=download_timeout,
+        extract=extract,
     )
     watcher.start(once=args.once)
 
