@@ -7,6 +7,7 @@ begins seeding immediately.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import signal
@@ -75,10 +76,32 @@ def main() -> None:
     signal.signal(signal.SIGTERM, on_signal)
     signal.signal(signal.SIGINT, on_signal)
 
-    # Periodic status logging
+    # Stats file path
+    stats_path = Path(data_dir) / "seeder-stats.json"
+    started_at = time.time()
+
+    # Periodic status logging + stats file
     while running:
         try:
             status = handle.status()
+            now = time.time()
+            stats = {
+                "state": "seeding" if status.is_seeding else str(status.state),
+                "peers": status.num_peers,
+                "upload_rate_kbps": round(status.upload_rate / 1024, 1),
+                "download_rate_kbps": round(status.download_rate / 1024, 1),
+                "total_upload_mib": round(status.total_upload / (1024**2), 1),
+                "total_download_mib": round(status.total_download / (1024**2), 1),
+                "snapshot_size_gib": round(snapshot_size / (1024**3), 2),
+                "torrent_name": status.name,
+                "uptime_seconds": int(now - started_at),
+                "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            }
+            # Atomic write
+            tmp = stats_path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(stats, indent=2) + "\n")
+            tmp.rename(stats_path)
+
             logger.info(
                 f"Seeding | Peers: {status.num_peers} | "
                 f"UL: {status.upload_rate / 1024:.1f} KB/s | "
