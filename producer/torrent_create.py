@@ -4,6 +4,17 @@ import os
 import sys
 
 
+def _v2_flags(lt):
+    """Build v2-only + merkle flags, compatible with libtorrent 2.0.x and 2.1+."""
+    flags = lt.create_torrent_flags_t.v2_only
+    # 2.1+ renamed merkle → merkle_tree
+    if hasattr(lt.create_torrent_flags_t, "merkle_tree"):
+        flags |= lt.create_torrent_flags_t.merkle_tree
+    elif hasattr(lt.create_torrent_flags_t, "merkle"):
+        flags |= lt.create_torrent_flags_t.merkle
+    return flags
+
+
 def create_torrent(
     filepath: str,
     web_seed_url: str | None = None,
@@ -19,8 +30,7 @@ def create_torrent(
     filename = os.path.basename(filepath)
     lt.add_files(fs, filepath)
 
-    create_flags = lt.create_torrent_flags_t.v2_only | lt.create_torrent_flags_t.merkle_tree
-    ct = lt.create_torrent(fs, piece_size=piece_size, flags=create_flags)
+    ct = lt.create_torrent(fs, piece_size=piece_size, flags=_v2_flags(lt))
 
     if web_seed_url:
         url_list = [f"{web_seed_url.rstrip('/')}/{filename}"]
@@ -58,8 +68,7 @@ def create_torrent_from_directory(
         file_size = os.path.getsize(full_path)
         fs.add_file(fname, file_size)
 
-    create_flags = lt.create_torrent_flags_t.v2_only | lt.create_torrent_flags_t.merkle_tree
-    ct = lt.create_torrent(fs, piece_size=piece_size, flags=create_flags)
+    ct = lt.create_torrent(fs, piece_size=piece_size, flags=_v2_flags(lt))
 
     if web_seed_url:
         url_list = []
