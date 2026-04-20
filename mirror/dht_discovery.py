@@ -84,18 +84,31 @@ def _process_mutable_item_snapshot(
             return None
 
         # Convert item to bytes — libtorrent returns an entry object.
-        # For our raw 32-byte info hash values, the entry is a string type.
-        if isinstance(item, (bytes, bytearray)):
+        # For mutable items, alert.item may be:
+        # 1. A dict with 'key' and 'value' fields (the full DHT response)
+        # 2. Raw bytes/string (the value directly)
+        if isinstance(item, dict):
+            # Extract the actual value from the DHT response dict
+            value_raw = item.get("value") or item.get(b"value")
+            if value_raw is None:
+                logger.warning(f"DHT item dict has no 'value' key: {list(item.keys())}")
+                return None
+            if isinstance(value_raw, (bytes, bytearray)):
+                value_bytes = bytes(value_raw)
+            elif isinstance(value_raw, str):
+                value_bytes = value_raw.encode("latin-1")
+            else:
+                logger.warning(f"Unexpected value type in dict: {type(value_raw)}")
+                return None
+        elif isinstance(item, (bytes, bytearray)):
             value_bytes = bytes(item)
         elif isinstance(item, str):
             value_bytes = item.encode("latin-1")
-        elif isinstance(item, dict):
-            value_bytes = bencodepy.encode(item)
         else:
             logger.warning(f"Unexpected item type: {type(item)}")
             return None
 
-        logger.info(f"DHT item raw: type={type(item).__name__}, len={len(value_bytes)}, hex={value_bytes[:64].hex()}")
+        logger.info(f"DHT item: type={type(item).__name__}, keys={list(item.keys()) if isinstance(item, dict) else 'N/A'}")
 
         # Note: signature verification requires raw signature bytes which
         # we don't currently extract in AlertSnapshot. For now, trust seq > 0
