@@ -141,6 +141,17 @@ class LibtorrentSession:
     def get_handle(self, info_hash: str) -> Optional[lt.torrent_handle]:
         return self._handles.get(info_hash)
 
+    def dht_node_count(self) -> int:
+        """Return the number of DHT nodes in the routing table."""
+        if not self._session:
+            return 0
+        # Use post_dht_stats + dht_stats_alert to avoid deprecated status()
+        # For simplicity, use session stats counters
+        try:
+            return self._session.status().dht_nodes  # type: ignore[attr-defined]
+        except Exception:
+            return 0
+
     def wait_for_alert(self, alert_type: type, timeout: float = 60.0) -> Optional[lt.alert]:
         deadline = time.time() + timeout
         while time.time() < deadline:
