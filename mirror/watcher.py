@@ -332,26 +332,34 @@ class MirrorWatcher:
         return self._monitor_download(handle, result.info_hash_hex)
 
     def _log_torrent_metadata(self, t_info) -> None:
-        """Log snapshot metadata from the torrent comment, if available."""
+        """Log snapshot metadata from the torrent info dict, if available."""
         if not t_info:
             return
-        comment = t_info.comment()
-        if not comment:
-            return
         try:
-            import json
-            meta = json.loads(comment)
+            # x-snapshot is injected into the info dict by the producer,
+            # so it survives BEP 9 magnet metadata exchange.
+            raw = (
+                t_info.info_section()
+                if hasattr(t_info, "info_section")
+                else t_info.metadata()
+            )
+            if not raw:
+                return
+            import bencodepy
+            info_dict = bencodepy.decode(raw)
+            x_snapshot = info_dict.get(b"x-snapshot")
+            if not x_snapshot:
+                return
+            meta = json.loads(x_snapshot)
             parts = []
             if "original_filename" in meta:
                 parts.append(f"file={meta['original_filename']}")
             if "source_url" in meta:
                 parts.append(f"url={meta['source_url']}")
-            if "created_at" in meta:
-                parts.append(f"created={meta['created_at']}")
             if parts:
                 logger.info(f"Snapshot metadata: {', '.join(parts)}")
-        except (ValueError, KeyError):
-            logger.debug(f"Torrent comment (not JSON): {comment[:100]}")
+        except Exception:
+            logger.debug("Could not parse torrent metadata", exc_info=True)
 
     def _monitor_download(
         self,

@@ -21,7 +21,18 @@ def create_torrent(
     piece_size: int = 32 * 1024 * 1024,
     output_path: str | None = None,
     comment: str | None = None,
+    snapshot_meta: str | None = None,
 ) -> tuple[str, str]:
+    """Create a v2 torrent for a single file.
+
+    Args:
+        snapshot_meta: JSON string embedded as 'x-snapshot' in the info dict.
+            Survives magnet link metadata exchange (BEP 9). Only include
+            stable fields (source_url, original_filename) — not timestamps,
+            since changes affect the info hash.
+        comment: Stored in the outer torrent dict. NOT available via magnet
+            links — only when loading from a .torrent file.
+    """
     import libtorrent as lt
 
     if output_path is None:
@@ -45,7 +56,15 @@ def create_torrent(
 
     lt.set_piece_hashes(ct, os.path.dirname(filepath) or ".")
 
-    torrent_data = lt.bencode(ct.generate())
+    entry = ct.generate()
+
+    # Inject snapshot metadata into the info dict so it survives
+    # magnet link metadata exchange (BEP 9). The outer comment field
+    # is NOT transferred via magnet — only the info dict is.
+    if snapshot_meta:
+        entry[b"info"][b"x-snapshot"] = snapshot_meta.encode("utf-8")
+
+    torrent_data = lt.bencode(entry)
     with open(output_path, "wb") as f:
         f.write(torrent_data)
 

@@ -43,15 +43,20 @@ def cmd_publish(args: argparse.Namespace) -> None:
 
     print(f"Creating torrent for: {snapshot_file}")
 
-    # Build torrent comment with snapshot metadata
-    comment_data = {
-        "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-    }
+    # Build snapshot metadata for the info dict (survives magnet exchange)
+    # Only include stable fields — timestamps go in the outer comment
+    snapshot_meta = {}
     if args.source_url:
-        comment_data["source_url"] = args.source_url
+        snapshot_meta["source_url"] = args.source_url
     if args.original_filename:
-        comment_data["original_filename"] = args.original_filename
-    comment = json.dumps(comment_data, separators=(",", ":"))
+        snapshot_meta["original_filename"] = args.original_filename
+    snapshot_meta_json = json.dumps(snapshot_meta, separators=(",", ":")) if snapshot_meta else None
+
+    # Outer comment with timestamp (only available from .torrent file, not magnet)
+    comment = json.dumps(
+        {"created_at": datetime.datetime.now(datetime.timezone.utc).isoformat()},
+        separators=(",", ":"),
+    )
 
     torrent_path, info_hash = create_torrent(
         filepath=snapshot_file,
@@ -59,6 +64,7 @@ def cmd_publish(args: argparse.Namespace) -> None:
         piece_size=args.piece_size,
         output_path=snapshot_file + ".torrent",
         comment=comment,
+        snapshot_meta=snapshot_meta_json,
     )
     print(f"Torrent created: {torrent_path}")
     print(f"Info-hash (v2): {info_hash}")
