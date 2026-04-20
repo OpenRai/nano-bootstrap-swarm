@@ -118,9 +118,18 @@ def main() -> None:
     )
     session.start()
 
-    # Wait for DHT bootstrap
-    logger.info("Waiting 15s for DHT bootstrap...")
-    time.sleep(15)
+    # Wait for DHT bootstrap (need enough nodes for dht_put to succeed)
+    logger.info("Waiting for DHT bootstrap (min 20 nodes, up to 120s)...")
+    bootstrap_deadline = time.time() + 120
+    while time.time() < bootstrap_deadline:
+        time.sleep(5)
+        status = session._session.status()
+        dht_nodes = status.dht_nodes
+        logger.info(f"DHT bootstrap: {dht_nodes} nodes")
+        if dht_nodes >= 20:
+            break
+    else:
+        logger.warning(f"DHT bootstrap timeout, proceeding with {dht_nodes} nodes")
 
     handle = session.add_torrent(
         info_hash="",  # unused when torrent_file is provided
@@ -153,6 +162,8 @@ def main() -> None:
         if dht_keys and (now - last_dht_publish) >= DHT_REPUBLISH_INTERVAL:
             info_hash_hex = _load_info_hash(data_dir)
             if info_hash_hex and session._session:
+                dht_nodes = session._session.status().dht_nodes
+                logger.info(f"DHT has {dht_nodes} nodes, publishing...")
                 try:
                     privkey_64, pubkey_32 = dht_keys
                     _dht_publish(session._session, privkey_64, pubkey_32, info_hash_hex, salt)
