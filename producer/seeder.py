@@ -193,7 +193,7 @@ def main() -> None:
                                 )
                                 found_put = True
                             elif "dht" in snap.type_name.lower():
-                                logger.info(
+                                logger.debug(
                                     f"Alert: {snap.type_name}: {snap.message}"
                                 )
                         if found_put:
