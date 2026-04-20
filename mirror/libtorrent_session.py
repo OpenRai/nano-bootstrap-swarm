@@ -4,6 +4,7 @@ import logging
 import threading
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Optional
 
 import libtorrent as lt
@@ -107,12 +108,24 @@ class LibtorrentSession:
             "upload_rate_limit": 0,
         }
 
+        # Load saved DHT state for faster re-bootstrap
+        dht_state_path = Path(self.data_dir) / ".dht_state"
+        if dht_state_path.exists():
+            try:
+                state = lt.bdecode(dht_state_path.read_bytes())
+                settings["dht_state"] = state
+                logger.info("Loaded saved DHT state from %s", dht_state_path)
+            except Exception as e:
+                logger.warning("Failed to load DHT state: %s", e)
+
         self._session = lt.session(settings)
+        self._dht_state_path = dht_state_path
 
         for host, port in DHT_BOOTSTRAP_NODES:
             self._session.add_dht_node((host, port))
 
         self._running = True
+        self._dht_bootstrapped = threading.Event()
         self._alert_thread = threading.Thread(target=self._alert_loop, daemon=True)
         self._alert_thread.start()
         logger.info(f"libtorrent session started, listening on port {self._listen_port}")
@@ -122,6 +135,7 @@ class LibtorrentSession:
         if self._alert_thread:
             self._alert_thread.join(timeout=10)
         if self._session:
+            self.save_dht_state()
             for handle in self._handles.values():
                 try:
                     handle.save_resume_data(lt.torrent_handle.save_settings)
@@ -205,6 +219,27 @@ class LibtorrentSession:
         except Exception:
             return 0
 
+    def wait_for_dht_bootstrap(self, timeout: float = 120.0) -> bool:
+        """Wait for dht_bootstrap_alert, returns True if bootstrap completed."""
+        logger.info("Waiting for DHT bootstrap (up to %.0fs)...", timeout)
+        if self._dht_bootstrapped.wait(timeout=timeout):
+            return True
+        nodes = self.dht_node_count()
+        logger.warning("DHT bootstrap alert not received after %.0fs (%d nodes)", timeout, nodes)
+        return False
+
+    def save_dht_state(self) -> None:
+        """Save DHT state to disk for faster re-bootstrap on restart."""
+        if not self._session:
+            return
+        try:
+            entry = self._session.save_state(lt.save_state_flags_t.save_dht_state)
+            data = lt.bencode(entry)
+            self._dht_state_path.write_bytes(data)
+            logger.debug("Saved DHT state to %s", self._dht_state_path)
+        except Exception as e:
+            logger.warning("Failed to save DHT state: %s", e)
+
     def wait_for_alert(
         self, type_name: str, timeout: float = 60.0
     ) -> Optional[AlertSnapshot]:
@@ -239,6 +274,9 @@ class LibtorrentSession:
                         self._alerts.extend(snapshots)
                     self._alert_event.set()
                     for snap in snapshots:
+                        if snap.type_name == "dht_bootstrap_alert":
+                            logger.info("DHT bootstrap complete (%d nodes)", self.dht_node_count())
+                            self._dht_bootstrapped.set()
                         if snap.category & lt.alert.category_t.error_notification:
                             logger.warning(f"libtorrent alert: {snap.message}")
             except Exception as e:

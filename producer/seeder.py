@@ -118,18 +118,10 @@ def main() -> None:
     )
     session.start()
 
-    # Wait for DHT bootstrap (need enough nodes for dht_put to succeed)
-    logger.info("Waiting for DHT bootstrap (min 50 nodes, up to 120s)...")
-    bootstrap_deadline = time.time() + 120
-    dht_nodes = 0
-    while time.time() < bootstrap_deadline:
-        time.sleep(5)
-        dht_nodes = session.dht_node_count()
-        logger.info(f"DHT bootstrap: {dht_nodes} nodes")
-        if dht_nodes >= 50:
-            break
-    if dht_nodes < 50:
-        logger.warning(f"DHT bootstrap: only {dht_nodes} nodes after 120s")
+    # Wait for DHT bootstrap alert (required before dht_put will succeed)
+    bootstrapped = session.wait_for_dht_bootstrap(timeout=120)
+    if not bootstrapped:
+        logger.warning("Proceeding without DHT bootstrap alert — puts may fail")
 
     handle = session.add_torrent(
         info_hash="",  # unused when torrent_file is provided
@@ -188,6 +180,8 @@ def main() -> None:
                         logger.warning("DHT put: no dht_put_alert within 60s")
                 except Exception as e:
                     logger.error(f"DHT publish error: {e}")
+            # Save DHT state periodically for faster re-bootstrap
+            session.save_dht_state()
 
         try:
             status = handle.status()
