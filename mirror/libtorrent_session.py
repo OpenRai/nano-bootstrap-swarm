@@ -123,7 +123,7 @@ class LibtorrentSession:
         if self._dht_state_path.exists():
             try:
                 state = lt.bdecode(self._dht_state_path.read_bytes())
-                self._session.load_state(state, lt.session.save_dht_state)
+                self._session.load_state(state, lt.save_state_flags_t.save_dht_state)
                 logger.info("Loaded saved DHT state from %s", self._dht_state_path)
             except Exception as e:
                 logger.warning("Failed to load DHT state: %s", e)

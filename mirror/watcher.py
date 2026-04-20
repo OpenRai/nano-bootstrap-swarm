@@ -295,7 +295,7 @@ class MirrorWatcher:
             self._current_info_hash = result.info_hash_hex
             self.state.update(result.sequence, result.info_hash_hex)
 
-            t_info = handle.get_torrent_info()
+            t_info = handle.torrent_file()
             t_name = t_info.name() if t_info else "unknown"
             self.state.current_torrent_name = t_name
             self.state._save()
@@ -317,7 +317,7 @@ class MirrorWatcher:
             self._current_info_hash = result.info_hash_hex
             self.state.update(result.sequence, result.info_hash_hex)
 
-            t_info = handle.get_torrent_info()
+            t_info = handle.torrent_file()
             t_name = t_info.name() if t_info else "unknown"
             self.state.current_torrent_name = t_name
             self.state._save()
