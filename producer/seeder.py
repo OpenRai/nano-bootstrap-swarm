@@ -36,15 +36,32 @@ DHT_REPUBLISH_INTERVAL = 1800  # 30 minutes
 
 
 def _load_dht_keys() -> tuple[bytes, bytes] | None:
-    """Load DHT private key from env, return (privkey_64, pubkey_32) or None."""
+    """Load DHT private key from env, return (privkey_64, pubkey_32) or None.
+
+    libtorrent's ed25519 expects the 64-byte *expanded* private key
+    (SHA-512 of the seed with clamping), NOT the NaCl format (seed || pubkey).
+    """
     private_key_hex = os.environ.get("DHT_PRIVATE_KEY")
     if not private_key_hex:
         return None
     try:
+        import hashlib
+
         import nacl.signing
 
-        sk = nacl.signing.SigningKey(bytes.fromhex(private_key_hex))
-        return bytes(sk._signing_key), bytes(sk.verify_key)
+        seed = bytes.fromhex(private_key_hex)
+        # Derive public key via NaCl
+        sk = nacl.signing.SigningKey(seed)
+        pubkey = bytes(sk.verify_key)
+
+        # Build libtorrent-format expanded private key:
+        # SHA-512(seed), then clamp first 32 bytes
+        expanded = bytearray(hashlib.sha512(seed).digest())
+        expanded[0] &= 248
+        expanded[31] &= 63
+        expanded[31] |= 64
+
+        return bytes(expanded), pubkey
     except Exception as e:
         logger.warning(f"Failed to load DHT_PRIVATE_KEY: {e}")
         return None
