@@ -293,6 +293,8 @@ class LibtorrentSession:
                         if snap.category & lt.alert.category_t.error_notification:
                             if "dropped alerts" in snap.message:
                                 logger.debug(f"libtorrent: {snap.message}")
+                            elif "UPnP" in snap.message or "NAT-PMP" in snap.message:
+                                logger.debug(f"libtorrent: {snap.message}")
                             else:
                                 logger.warning(f"libtorrent alert: {snap.message}")
             except Exception as e:

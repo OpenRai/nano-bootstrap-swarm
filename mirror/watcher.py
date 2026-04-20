@@ -82,6 +82,7 @@ class MirrorWatcher:
         salt: str = DEFAULT_SALT,
         download_timeout: int = DEFAULT_DOWNLOAD_TIMEOUT,
         extract: bool = False,
+        seed_peers: Optional[list[tuple[str, int]]] = None,
     ):
         self.authority_pubkey_hex = authority_pubkey_hex
         self.data_dir = data_dir
@@ -90,6 +91,7 @@ class MirrorWatcher:
         self.salt = salt
         self.download_timeout = download_timeout
         self.extract = extract
+        self.seed_peers = seed_peers or []
 
         self.pub_key_bytes = bytes.fromhex(self.authority_pubkey_hex)
         self.nano_address = public_key_to_nano_address(self.pub_key_bytes)
@@ -115,6 +117,8 @@ class MirrorWatcher:
                 logger.info("Download timeout: infinite")
         else:
             logger.info(f"Mode: SWARM (continuous polling every {self.poll_interval}s)")
+        if self.seed_peers:
+            logger.info(f"Seed peers: {', '.join(f'{h}:{p}' for h, p in self.seed_peers)}")
         logger.info("=" * 60)
 
         self.session = LibtorrentSession(
@@ -287,6 +291,7 @@ class MirrorWatcher:
                 save_path=self.data_dir,
                 web_seeds=[self.web_seed_url],
             )
+            self._connect_seed_peers(handle)
 
             if self.state.last_info_hash:
                 logger.info("Performing force recheck on existing data...")
@@ -314,6 +319,7 @@ class MirrorWatcher:
                 save_path=self.data_dir,
                 web_seeds=[self.web_seed_url],
             )
+            self._connect_seed_peers(handle)
 
             self._current_info_hash = result.info_hash_hex
             self.state.update(result.sequence, result.info_hash_hex)
@@ -330,6 +336,15 @@ class MirrorWatcher:
             return DownloadStatus.ERROR
 
         return self._monitor_download(handle, result.info_hash_hex)
+
+    def _connect_seed_peers(self, handle) -> None:
+        """Connect to explicit seed peers (e.g. seeder on the same host)."""
+        for host, port in self.seed_peers:
+            try:
+                handle.connect_peer((host, port))
+                logger.info(f"Connecting to seed peer {host}:{port}")
+            except Exception as e:
+                logger.warning(f"Failed to connect to seed peer {host}:{port}: {e}")
 
     def _log_torrent_metadata(self, t_info) -> None:
         """Log snapshot metadata from the torrent info dict, if available."""
@@ -367,7 +382,8 @@ class MirrorWatcher:
         info_hash: str,
     ) -> DownloadStatus:
         last_progress_log = 0.0
-        consecutive_stall_warnings = 0
+        last_state: str = ""
+        no_peer_seconds = 0
         start_time = time.time()
         metadata_logged = False
 
@@ -396,6 +412,14 @@ class MirrorWatcher:
                 state = str(status.state)
                 num_peers = status.num_peers
 
+                # Reset progress tracking on state transitions (e.g.
+                # checking_files → downloading resets progress to 0)
+                if state != last_state:
+                    if last_state:
+                        logger.info(f"State transition: {last_state} → {state}")
+                    last_state = state
+                    last_progress_log = 0.0
+
                 if progress - last_progress_log >= 0.05 or progress == 1.0:
                     dl_rate = status.download_rate
                     ul_rate = status.upload_rate
@@ -405,20 +429,22 @@ class MirrorWatcher:
                         f"Peers: {num_peers}"
                     )
                     last_progress_log = progress
-                    consecutive_stall_warnings = 0
 
                 if status.is_seeding:
                     logger.info(f"Snapshot seeding complete: {info_hash[:16]}...")
                     return DownloadStatus.SEEDING
 
-                if num_peers == 0 and progress == 0:
-                    consecutive_stall_warnings += 1
-                    if consecutive_stall_warnings >= 12:
+                # Stall detection: warn every 60s when no peers are connected
+                if num_peers == 0:
+                    no_peer_seconds += 5
+                    if no_peer_seconds >= 60:
                         logger.warning(
-                            f"No peers, 0% progress for {consecutive_stall_warnings * 5}s "
+                            f"No peers, {progress * 100:.1f}% progress for 60s "
                             f"— download may be stalled"
                         )
-                        consecutive_stall_warnings = 0
+                        no_peer_seconds = 0
+                else:
+                    no_peer_seconds = 0
 
             except Exception as e:
                 logger.error(f"Error monitoring download: {e}")
@@ -481,6 +507,14 @@ def main() -> None:
         action="store_true",
         help="Extract .7z after download and delete archive (only in --once mode)",
     )
+    parser.add_argument(
+        "--seed-peer",
+        action="append",
+        default=[],
+        dest="seed_peers",
+        metavar="HOST:PORT",
+        help="Explicit peer to connect to (can be repeated). Env: SEED_PEERS (comma-separated)",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -514,6 +548,20 @@ def main() -> None:
         logger.warning("--extract is only supported in --once mode; ignoring")
         extract = False
 
+    # Parse seed peers from CLI and env
+    seed_peers: list[tuple[str, int]] = []
+    env_peers = os.environ.get("SEED_PEERS", "")
+    all_peer_strs = args.seed_peers + [p.strip() for p in env_peers.split(",") if p.strip()]
+    for peer_str in all_peer_strs:
+        try:
+            host, port_str = peer_str.rsplit(":", 1)
+            seed_peers.append((host, int(port_str)))
+        except (ValueError, IndexError):
+            print(
+                f"WARNING: Invalid seed peer '{peer_str}', expected HOST:PORT",
+                file=sys.stderr,
+            )
+
     watcher = MirrorWatcher(
         authority_pubkey_hex=pubkey,
         data_dir=args.data_dir,
@@ -522,6 +570,7 @@ def main() -> None:
         salt=args.salt,
         download_timeout=download_timeout,
         extract=extract,
+        seed_peers=seed_peers,
     )
     watcher.start(once=args.once)
 
