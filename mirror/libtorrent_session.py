@@ -3,7 +3,8 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import Any, Optional
 
 import libtorrent as lt
 
@@ -14,6 +15,60 @@ DHT_BOOTSTRAP_NODES = [
     ("router.utorrent.com", 6881),
     ("dht.transmissionbt.com", 6881),
 ]
+
+
+@dataclass
+class AlertSnapshot:
+    """Safe copy of alert data — survives after libtorrent frees the alert."""
+
+    type_name: str
+    category: int
+    message: str
+    # Alert-specific fields (extracted before the raw alert is freed)
+    extra: dict[str, Any] = field(default_factory=dict)
+
+
+def _snapshot_alert(alert: lt.alert) -> AlertSnapshot:
+    """Extract all useful data from a libtorrent alert before it is freed.
+
+    libtorrent alert pointers are only valid until the next pop_alerts() call.
+    This function copies everything we need into a plain Python object.
+    """
+    type_name = type(alert).__name__
+    try:
+        cat = alert.category()
+    except Exception:
+        cat = 0
+    try:
+        msg = str(alert)
+    except Exception:
+        msg = type_name
+
+    extra: dict[str, Any] = {}
+
+    if isinstance(alert, lt.dht_put_alert):
+        extra["num_success"] = getattr(alert, "num_success", None)
+        extra["salt"] = getattr(alert, "salt", "")
+        extra["seq"] = getattr(alert, "seq", 0)
+        try:
+            extra["public_key"] = bytes(alert.public_key).hex()
+        except Exception:
+            pass
+
+    elif isinstance(alert, lt.dht_mutable_item_alert):
+        extra["authoritative"] = getattr(alert, "authoritative", False)
+        extra["seq"] = getattr(alert, "seq", 0)
+        extra["salt"] = getattr(alert, "salt", "")
+        try:
+            extra["item"] = alert.item
+        except Exception:
+            extra["item"] = None
+        try:
+            extra["key"] = bytes(alert.key).hex()
+        except Exception:
+            pass
+
+    return AlertSnapshot(type_name=type_name, category=cat, message=msg, extra=extra)
 
 
 class LibtorrentSession:
@@ -29,7 +84,7 @@ class LibtorrentSession:
         self._session: Optional[lt.session] = None
         self._alert_thread: Optional[threading.Thread] = None
         self._running = False
-        self._alerts: list[lt.alert] = []
+        self._alerts: list[AlertSnapshot] = []
         self._alert_lock = threading.Lock()
         self._alert_event = threading.Event()
         self._handles: dict[str, lt.torrent_handle] = {}
@@ -145,26 +200,28 @@ class LibtorrentSession:
         """Return the number of DHT nodes in the routing table."""
         if not self._session:
             return 0
-        # Use post_dht_stats + dht_stats_alert to avoid deprecated status()
-        # For simplicity, use session stats counters
         try:
             return self._session.status().dht_nodes  # type: ignore[attr-defined]
         except Exception:
             return 0
 
-    def wait_for_alert(self, alert_type: type, timeout: float = 60.0) -> Optional[lt.alert]:
+    def wait_for_alert(
+        self, type_name: str, timeout: float = 60.0
+    ) -> Optional[AlertSnapshot]:
+        """Wait for an alert snapshot with the given type name."""
         deadline = time.time() + timeout
         while time.time() < deadline:
             self._alert_event.wait(timeout=1.0)
             with self._alert_lock:
                 self._alert_event.clear()
-                for alert in self._alerts:
-                    if isinstance(alert, alert_type):
-                        self._alerts.remove(alert)
-                        return alert
+                for snap in self._alerts:
+                    if snap.type_name == type_name:
+                        self._alerts.remove(snap)
+                        return snap
         return None
 
-    def pop_alerts(self) -> list[lt.alert]:
+    def pop_alerts(self) -> list[AlertSnapshot]:
+        """Return and clear all accumulated alert snapshots."""
         with self._alert_lock:
             alerts = self._alerts[:]
             self._alerts.clear()
@@ -175,15 +232,15 @@ class LibtorrentSession:
             try:
                 new_alerts = self._session.pop_alerts()
                 if new_alerts:
+                    # Snapshot all alerts IMMEDIATELY — raw alert pointers
+                    # become invalid on the next pop_alerts() call.
+                    snapshots = [_snapshot_alert(a) for a in new_alerts]
                     with self._alert_lock:
-                        self._alerts.extend(new_alerts)
+                        self._alerts.extend(snapshots)
                     self._alert_event.set()
-                    for alert in new_alerts:
-                        if (
-                            hasattr(alert, "category")
-                            and alert.category() & lt.alert.category_t.error_notification
-                        ):
-                            logger.warning(f"libtorrent alert: {alert}")
+                    for snap in snapshots:
+                        if snap.category & lt.alert.category_t.error_notification:
+                            logger.warning(f"libtorrent alert: {snap.message}")
             except Exception as e:
                 if self._running:
                     logger.error(f"Alert loop error: {e}")
@@ -198,9 +255,8 @@ class LibtorrentSession:
     def dht_get_mutable_item(self, public_key: bytes, salt: str = "daily") -> None:
         if self._session is None:
             raise RuntimeError("Session not started")
-        # Pass bytes directly — str would be UTF-8 encoded by Python→C++, corrupting binary keys
-        pk = public_key if isinstance(public_key, bytes) else public_key.encode('latin-1')
-        salt_bytes = salt.encode('utf-8') if isinstance(salt, str) else salt
+        pk = public_key if isinstance(public_key, bytes) else public_key.encode("latin-1")
+        salt_bytes = salt.encode("utf-8") if isinstance(salt, str) else salt
         self._session.dht_get_mutable_item(pk, salt_bytes)
         logger.info(f"DHT get_mutable_item requested for salt='{salt}'")
 

@@ -175,14 +175,13 @@ def main() -> None:
                     while time.time() < put_deadline:
                         time.sleep(2)
                         alerts = session.pop_alerts()
-                        for a in alerts:
-                            atype = type(a).__name__
-                            if isinstance(a, lt.dht_put_alert):
-                                num = a.num_success if hasattr(a, "num_success") else "?"
+                        for snap in alerts:
+                            if snap.type_name == "dht_put_alert":
+                                num = snap.extra.get("num_success", "?")
                                 logger.info(f"DHT put result: success={num}")
                                 found_put = True
-                            elif "dht" in atype.lower():
-                                logger.debug(f"DHT alert: {atype}: {a}")
+                            elif "dht" in snap.type_name.lower():
+                                logger.debug(f"DHT alert: {snap.type_name}: {snap.message}")
                         if found_put:
                             break
                     if not found_put:
