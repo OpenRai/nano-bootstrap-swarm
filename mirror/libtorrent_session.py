@@ -116,18 +116,17 @@ class LibtorrentSession:
             "upload_rate_limit": 0,
         }
 
+        self._session = lt.session(settings)
+
         # Load saved DHT state for faster re-bootstrap
-        dht_state_path = Path(self.data_dir) / ".dht_state"
-        if dht_state_path.exists():
+        self._dht_state_path = Path(self.data_dir) / ".dht_state"
+        if self._dht_state_path.exists():
             try:
-                state = lt.bdecode(dht_state_path.read_bytes())
-                settings["dht_state"] = state
-                logger.info("Loaded saved DHT state from %s", dht_state_path)
+                state = lt.bdecode(self._dht_state_path.read_bytes())
+                self._session.load_state(state, lt.session.save_dht_state)
+                logger.info("Loaded saved DHT state from %s", self._dht_state_path)
             except Exception as e:
                 logger.warning("Failed to load DHT state: %s", e)
-
-        self._session = lt.session(settings)
-        self._dht_state_path = dht_state_path
 
         for host, port in DHT_BOOTSTRAP_NODES:
             self._session.add_dht_node((host, port))
