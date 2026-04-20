@@ -72,7 +72,7 @@ def publish_to_dht(
 
     settings = {
         "enable_dht": True,
-        "listen_interfaces": "0.0.0.0:6881",
+        "listen_interfaces": "0.0.0.0:6883",
         "alert_mask": lt.alert.category_t.all_categories,
     }
     ses = lt.session(settings)
