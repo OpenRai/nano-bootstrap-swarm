@@ -26,7 +26,8 @@ logger = logging.getLogger("mirror.watcher")
 
 DEFAULT_DATA_DIR = os.environ.get("DATA_DIR", "/data")
 DEFAULT_POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "600"))
-DEFAULT_DOWNLOAD_TIMEOUT = 0
+DEFAULT_STALL_WARN_SECONDS = 300   # leech: warn if no bytes received for this long
+DEFAULT_DHT_INACTIVITY_TIMEOUT = 1800  # swarm: exit if DHT returns nothing for this long
 STATE_FILENAME = "mirror_state.json"
 
 WEB_SEED_URL = "https://s3.us-east-2.amazonaws.com/repo.nano.org/snapshots/latest"
@@ -34,7 +35,6 @@ WEB_SEED_URL = "https://s3.us-east-2.amazonaws.com/repo.nano.org/snapshots/lates
 
 class DownloadStatus(Enum):
     SEEDING = "seeding"
-    TIMEOUT = "timeout"
     ERROR = "error"
 
 
@@ -46,7 +46,8 @@ class MirrorWatcher:
         poll_interval: int = DEFAULT_POLL_INTERVAL,
         web_seed_url: str = WEB_SEED_URL,
         salt: str = DEFAULT_SALT,
-        download_timeout: int = DEFAULT_DOWNLOAD_TIMEOUT,
+        download_timeout: int = 0,  # unused in leech mode; swarm DHT inactivity timeout
+        stall_warn_seconds: int = DEFAULT_STALL_WARN_SECONDS,
         extract: bool = False,
         seed_peers: Optional[list[tuple[str, int]]] = None,
         web_seed_mode: str = WEB_SEED_MODE_FALLBACK,
@@ -56,7 +57,8 @@ class MirrorWatcher:
         self.poll_interval = poll_interval
         self.web_seed_url = web_seed_url
         self.salt = salt
-        self.download_timeout = download_timeout
+        self.download_timeout = download_timeout  # swarm DHT inactivity timeout
+        self.stall_warn_seconds = stall_warn_seconds
         self.extract = extract
         self.seed_peers = seed_peers or []
         self.web_seed_mode = web_seed_mode
@@ -87,12 +89,13 @@ class MirrorWatcher:
         logger.info(f"DHT salt: '{self.salt}'")
         if once:
             logger.info("Mode: LEECH (download-once, exit when done)")
-            if self.download_timeout > 0:
-                logger.info(f"Download timeout: {self.download_timeout}s")
-            else:
-                logger.info("Download timeout: infinite")
+            logger.info(
+                f"Stall warning threshold: {self.stall_warn_seconds}s with no bytes received"
+            )
         else:
             logger.info(f"Mode: SWARM (continuous polling every {self.poll_interval}s)")
+            if self.download_timeout > 0:
+                logger.info(f"DHT inactivity timeout: {self.download_timeout}s")
         if self.seed_peers:
             logger.info(f"Seed peers: {', '.join(f'{h}:{p}' for h, p in self.seed_peers)}")
         logger.info("=" * 60)
@@ -193,9 +196,6 @@ class MirrorWatcher:
                 self._extract_and_cleanup(archive_path)
 
             sys.exit(0)
-        if status == DownloadStatus.TIMEOUT:
-            logger.error(f"Leecher: download timed out after {self.download_timeout}s")
-            sys.exit(1)
 
         logger.error("Leecher: download failed")
         sys.exit(1)
@@ -261,6 +261,8 @@ class MirrorWatcher:
         self._monitor_thread.start()
 
     def _discovery_loop(self) -> None:
+        dht_inactive_seconds = 0
+
         while self._running:
             try:
                 self.state.set_phase("discovering")
@@ -271,9 +273,18 @@ class MirrorWatcher:
                 )
 
                 if result is not None:
+                    dht_inactive_seconds = 0
                     self._set_desired_snapshot(result)
                 else:
+                    dht_inactive_seconds += self.poll_interval
                     logger.info("No snapshot discovered from DHT; will retry next cycle")
+                    if self.download_timeout > 0 and dht_inactive_seconds >= self.download_timeout:
+                        logger.error(
+                            f"DHT returned no results for {dht_inactive_seconds}s "
+                            f"— possible DHT health issue, exiting for restart"
+                        )
+                        self._running = False
+                        break
             except Exception:
                 self.state.set_phase("error", "Error during discovery cycle")
                 logger.exception("Error during discovery cycle")
@@ -411,6 +422,7 @@ class MirrorWatcher:
         last_state = ""
         no_peer_seconds = 0
         metadata_logged = False
+        stall_seconds = 0
 
         while self._running:
             info_hash = self._active_info_hash
@@ -420,6 +432,7 @@ class MirrorWatcher:
                 last_state = ""
                 no_peer_seconds = 0
                 metadata_logged = False
+                stall_seconds = 0
                 time.sleep(1)
                 continue
 
@@ -429,14 +442,7 @@ class MirrorWatcher:
                 last_state = ""
                 no_peer_seconds = 0
                 metadata_logged = False
-
-            if self.download_timeout > 0 and self._active_started_at is not None:
-                elapsed = time.time() - self._active_started_at
-                if elapsed >= self.download_timeout:
-                    logger.error(f"Download timeout reached ({self.download_timeout}s)")
-                    self._stop_reason = DownloadStatus.TIMEOUT
-                    self._running = False
-                    break
+                stall_seconds = 0
 
             try:
                 if not metadata_logged:
@@ -476,7 +482,22 @@ class MirrorWatcher:
                 else:
                     no_peer_seconds = 0
 
-                if status.is_seeding and self.download_timeout > 0:
+                # Stall detection: warn if download rate is 0 for stall_warn_seconds
+                if not status.is_seeding:
+                    if status.download_rate > 0:
+                        stall_seconds = 0
+                    else:
+                        stall_seconds += 5
+                        if stall_seconds >= self.stall_warn_seconds:
+                            logger.warning(
+                                f"No bytes received for {stall_seconds}s at "
+                                f"{status.progress * 100:.1f}% — still trying"
+                            )
+                            stall_seconds = 0
+                else:
+                    stall_seconds = 0
+
+                if status.is_seeding:
                     self._stop_reason = DownloadStatus.SEEDING
                     self._running = False
                     break
@@ -573,10 +594,11 @@ def main() -> None:
     parser.add_argument(
         "--download-timeout",
         type=int,
-        default=DEFAULT_DOWNLOAD_TIMEOUT,
+        default=DEFAULT_DHT_INACTIVITY_TIMEOUT,
         help=(
-            "Download timeout in seconds (0=infinite, default: 0; "
-            "auto-set to 3600 in --once mode)"
+            "Swarm mode only: exit after this many seconds of continuous DHT inactivity "
+            f"(0=never exit, default: {DEFAULT_DHT_INACTIVITY_TIMEOUT}). "
+            "Ignored in --once/leech mode."
         ),
     )
     parser.add_argument(
@@ -622,9 +644,7 @@ def main() -> None:
         )
         sys.exit(1)
 
-    download_timeout = args.download_timeout
-    if args.once and download_timeout == 0:
-        download_timeout = 3600
+    download_timeout = args.download_timeout if not args.once else 0
 
     extract = args.extract
     if extract and not args.once:
