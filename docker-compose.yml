@@ -4,7 +4,6 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
-      AUTHORITY_PUBKEY: "${AUTHORITY_PUBKEY:?AUTHORITY_PUBKEY is required}"
       SEED_PEERS: "${SEED_PEERS:-}"
       DATA_DIR: /data
       DHT_SALT: "${DHT_SALT:-daily}"

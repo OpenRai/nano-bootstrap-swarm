@@ -11,7 +11,7 @@ usage() {
 Usage: $ME [--push]
 
 Build the mirror image and optionally push to GHCR.
-Reads AUTHORITY_PUBKEY from \$HOME/.env.
+Reads AUTHORITY_PUBKEY from the repo root AUTHORITY_PUBKEY file.
 
 Run on the server as the deploy user.
 
@@ -29,13 +29,21 @@ while [[ "${1:-}" == --* ]]; do
     esac
 done
 
-echo "=== Reading AUTHORITY_PUBKEY from $HOME/.env ==="
-PUBKEY_FULL=$(grep '^AUTHORITY_PUBKEY=' "$HOME/.env")
-if [[ "$PUBKEY_FULL" =~ ^AUTHORITY_PUBKEY=([a-f0-9]+) ]]; then
-    PUBKEY="${BASH_REMATCH[1]}"
+AUTHORITY_PUBKEY_FILE="$REPO_DIR/AUTHORITY_PUBKEY"
+
+echo "=== Reading AUTHORITY_PUBKEY from $AUTHORITY_PUBKEY_FILE ==="
+if [[ ! -f "$AUTHORITY_PUBKEY_FILE" ]]; then
+    echo "ERROR: Missing $AUTHORITY_PUBKEY_FILE" >&2
+    exit 1
+fi
+
+IFS= read -r PUBKEY < "$AUTHORITY_PUBKEY_FILE"
+PUBKEY="${PUBKEY#"${PUBKEY%%[![:space:]]*}"}"
+PUBKEY="${PUBKEY%"${PUBKEY##*[![:space:]]}"}"
+if [[ "$PUBKEY" =~ ^[a-f0-9]{64}$ ]]; then
     echo "Found pubkey: ${PUBKEY:0:16}..."
 else
-    echo "ERROR: Could not parse AUTHORITY_PUBKEY from .env" >&2
+    echo "ERROR: $AUTHORITY_PUBKEY_FILE must contain a 64-char lowercase hex public key" >&2
     exit 1
 fi
 

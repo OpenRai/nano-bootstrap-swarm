@@ -6,9 +6,11 @@ All environment variables, CLI flags, and Docker Compose options.
 
 ## Mirror: Environment Variables
 
+The default OpenRAI mirror stream is baked into the published Docker image and stored in the repo root `AUTHORITY_PUBKEY` file for local builds and `uvx --from .` usage. Most mirror and leech users do not need to set `AUTHORITY_PUBKEY` unless they are following a different producer.
+
 | Variable | Default | Required | Description |
 |---|---|---|---|
-| `AUTHORITY_PUBKEY` | — | **Yes** | 32-byte Ed25519 public key (hex, 64 chars) |
+| `AUTHORITY_PUBKEY` | baked into image / repo | No | 32-byte Ed25519 public key (hex, 64 chars); override only to follow a different producer |
 | `DATA_DIR` | `/data` | No | Directory for ledger data and state |
 | `DHT_SALT` | `daily` | No | DHT mutable item salt namespace |
 | `POLL_INTERVAL` | `600` | No | DHT poll interval in seconds (swarm mode only) |
@@ -26,7 +28,7 @@ python -m mirror.watcher [flags]
 
 | Flag | Env | Default | Description |
 |---|---|---|---|
-| `--authority-pubkey` | `AUTHORITY_PUBKEY` | _(required)_ | Ed25519 public key hex |
+| `--authority-pubkey` | `AUTHORITY_PUBKEY` | baked into image / repo | Ed25519 public key hex |
 | `--data-dir` | `DATA_DIR` | `/data` | Data directory |
 | `--salt` | `DHT_SALT` | `daily` | DHT salt |
 | `--poll-interval` | `POLL_INTERVAL` | `600` | Poll interval in seconds |
@@ -34,7 +36,7 @@ python -m mirror.watcher [flags]
 | `--web-seed-mode` | `WEB_SEED_MODE` | `fallback` | Web seed policy: `fallback` or `off` |
 | `--log-level` | `LOG_LEVEL` | `INFO` | Log level |
 | `--once` | — | `False` | Leech mode: download once then exit |
-| `--download-timeout` | — | `0` | Download timeout in seconds (`0`=infinite; auto-3600 in `--once` mode) |
+| `--download-timeout` | — | `1800` | Swarm-only inactivity timeout in seconds (`0`=never exit; ignored in `--once` mode) |
 
 ---
 
@@ -45,7 +47,6 @@ services:
   nano-mirror:
     image: ghcr.io/openrai/nano-p2p-mirror:latest
     environment:
-      AUTHORITY_PUBKEY: "${AUTHORITY_PUBKEY:?AUTHORITY_PUBKEY is required}"
       SEED_PEERS: "${SEED_PEERS:-}"
       DATA_DIR: /data
       DHT_SALT: "${DHT_SALT:-daily}"
@@ -81,10 +82,22 @@ volumes:
 docker compose run -e POLL_INTERVAL=60 nano-mirror
 ```
 
+### Follow a Different Producer
+
+Only set `AUTHORITY_PUBKEY` if you want to follow a non-default snapshot stream:
+
+```bash
+docker run --rm \
+  -e AUTHORITY_PUBKEY=<other_producer_pubkey> \
+  -v $(pwd)/data:/data \
+  ghcr.io/openrai/nano-p2p-mirror:latest \
+  --once
+```
+
 ### Override Command for Leech Mode
 
 ```bash
-docker compose run --rm nano-mirror --once --download-timeout 3600
+docker compose run --rm nano-mirror --once
 ```
 
 ---
@@ -93,8 +106,7 @@ docker compose run --rm nano-mirror --once --download-timeout 3600
 
 | Variable | Default | Required | Description |
 |---|---|---|---|
-| `NANO_LEDGER_PATH` | `/var/nano/data/data.ldb` | No | Path to live LMDB |
-| `OUTPUT_DIR` | `.` | No | Output directory for `.zst` and `.torrent` files |
+| `OUTPUT_DIR` | `.` | No | Output directory for `.7z`, `.torrent`, and metadata files |
 | `DHT_PRIVATE_KEY` | — | **Yes** | Ed25519 private key (hex, 64 chars) |
 | `WEB_SEED_URL` | _(empty)_ | No | S3/HTTP URL added as web seed to torrent |
 | `DHT_SALT` | `daily` | No | DHT salt namespace |
@@ -104,31 +116,49 @@ docker compose run --rm nano-mirror --once --download-timeout 3600
 ## Producer: CLI Flags
 
 ```bash
-python -m producer.cli <command> [flags]
+python -m producer.cli publish [flags]
+python -m producer.cli validation-fixture create [flags]
+python -m producer.cli validation-fixture publish [flags]
 ```
 
-Common flags (available to all subcommands):
+#### `publish`
 
 | Flag | Description |
 |---|---|
-| `--ledger-path` | Path to data.ldb (overrides `NANO_LEDGER_PATH`) |
-| `--output-dir` | Output directory (overrides `OUTPUT_DIR`) |
+| `--snapshot-file` | Path to the `.7z` archive to torrent (defaults to `OUTPUT_DIR/nano-ledger-snapshot.7z`) |
+| `--output-dir` | Output directory for auto-detecting the snapshot file |
 | `--private-key` | Ed25519 private key hex (overrides `DHT_PRIVATE_KEY`) |
 | `--web-seed-url` | Web seed URL (overrides `WEB_SEED_URL`) |
-| `validation-fixture create --size` | Validation fixture source size (e.g. `1g`) |
-| `validation-fixture publish --salt` | Validation DHT salt (default: `validation`) |
 | `--piece-size` | Torrent piece size in bytes (default: 32 MiB) |
+| `--source-url` | Source URL stored in torrent metadata |
+| `--original-filename` | Original snapshot filename stored in torrent metadata |
 | `--state-file` | Path to publisher state file (default: `publisher_state.json`) |
-| `--dry-run` | Create payload but don't publish to DHT |
+| `--dry-run` | Create torrent metadata but don't publish to DHT |
 | `--salt` | DHT salt (overrides `DHT_SALT`) |
 
-Subcommands:
+#### `validation-fixture create`
 
-| Command | Description |
+| Flag | Description |
 |---|---|
-| `snapshot` | Extract ledger with `mdb_copy` and compress with `zstd` |
-| `publish` | Create torrent and publish info-hash to DHT |
-| `full` | Run snapshot then publish |
+| `--output-dir` | Output directory for validation fixture files |
+| `--archive-name` | Validation archive filename |
+| `--size` | Uncompressed random source size (e.g. `1g`) |
+| `--force` | Overwrite existing files |
+| `--keep-source` | Keep the uncompressed source file after archive creation |
+
+#### `validation-fixture publish`
+
+| Flag | Description |
+|---|---|
+| `--output-dir` | Directory containing the validation archive |
+| `--archive-name` | Validation archive filename |
+| `--private-key` | Ed25519 private key hex (overrides `DHT_PRIVATE_KEY`) |
+| `--web-seed-url` | Optional validation web seed URL |
+| `--source-url` | Source URL stored in torrent metadata |
+| `--piece-size` | Torrent piece size in bytes (default: 32 MiB) |
+| `--state-file` | Path to validation publisher state file |
+| `--dry-run` | Create torrent metadata but don't publish to DHT |
+| `--salt` | Validation DHT salt (default: `validation`) |
 
 ---
 
@@ -140,7 +170,7 @@ Persisted in `DATA_DIR` by the mirror in swarm mode.
 {
   "last_seq": 42,
   "last_info_hash": "abcd1234...",
-  "current_torrent_name": "nano-daily.ldb.zst",
+  "current_torrent_name": "nano-ledger-snapshot.7z",
   "phase": "seeding",
   "last_error": ""
 }
