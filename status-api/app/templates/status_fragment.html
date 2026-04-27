@@ -7,25 +7,6 @@
     <dt>Snapshot Created</dt>
     <dd>
       <span id="ts-render">{{ timestamp }}</span>
-      <script>
-        (function(){
-          const el = document.getElementById('ts-render');
-          if(!el) return;
-          const d = new Date("{{ timestamp }}");
-          if (!isNaN(d)) {
-            const local = d.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
-            const p = n => n.toString().padStart(2, '0');
-            const utc = d.getUTCFullYear() + '-' + p(d.getUTCMonth()+1) + '-' + p(d.getUTCDate()) + ' ' + p(d.getUTCHours()) + ':' + p(d.getUTCMinutes()) + ' UTC';
-            el.innerText = local + " (" + utc + ")";
-          }
-          // Update the "data age" in the main template if it exists
-          const ageEl = document.getElementById('data-age');
-          if (ageEl) {
-            ageEl.innerText = "Status updated just now";
-            ageEl.dataset.updated = new Date().getTime();
-          }
-        })();
-      </script>
     </dd>
   </dl>
 </section>

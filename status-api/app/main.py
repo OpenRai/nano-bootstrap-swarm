@@ -154,6 +154,7 @@ def get_status_fragment() -> Response:
     rendered = rendered.replace("{{ timestamp }}", _current_status["timestamp"])
     rendered = rendered.replace("{{ magnet }}", _current_status["magnet"])
     rendered = rendered.replace("{{ web_seed_url }}", _current_status["web_seed_url"])
+    rendered += f'<span id="_push-ts" data-ts="{_current_status["timestamp"]}" hidden></span>'
     headers = {
         "Content-Type": "text/html",
         "Cache-Control": "public, max-age=300",
@@ -178,6 +179,12 @@ def get_torrent() -> Response:
 def index() -> Response:
     template_path = Path(__file__).parent / "templates" / "index.html"
     html = template_path.read_text()
+    if _current_status:
+        html = html.replace(
+            '{{ timestamp }}', _current_status["timestamp"]
+        )
+    else:
+        html = html.replace('{{ timestamp }}', '')
     return HTMLResponse(content=html, headers={"Cache-Control": "public, max-age=300"})
 
 
