@@ -73,7 +73,7 @@ def _build_magnet(info_hash: str, torrent_name: str) -> str:
     from urllib.parse import quote
 
     params = [
-        f"xt=urn:btmh:{info_hash}",
+        f"xt=urn:btmh:1220{info_hash}",
         f"dn={quote(torrent_name)}",
     ]
     for tr in TRACKERS:
