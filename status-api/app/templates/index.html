@@ -12,45 +12,118 @@
     <meta name="twitter:card" content="summary">
     <script src="https://unpkg.com/htmx.org@2.0.4"></script>
     <style>
-        :root { --bg: #0b0f19; --fg: #e2e8f0; --accent: #4f46e5; --muted: #94a3b8; --card: #151c2c; }
+        :root { --bg: #0b0f19; --fg: #e2e8f0; --accent: #4f46e5; --muted: #94a3b8; --card: #151c2c; --border: #1e293b; }
         * { box-sizing: border-box; }
         body { font-family: system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--fg); max-width: 800px; margin: 0 auto; padding: 2rem 1rem; line-height: 1.6; }
         h1 { font-size: 1.75rem; margin-bottom: 0.5rem; }
         .subtitle { color: var(--muted); margin-bottom: 1.5rem; }
-        section { margin: 1.5rem 0; }
+        section { margin: 2rem 0; }
+        #data-age { font-size: 0.75rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.025em; margin-bottom: 0.5rem; display: block; }
         #status dl { display: grid; grid-template-columns: auto 1fr; gap: 0.25rem 1rem; }
         #status dt { color: var(--muted); }
         #status dd { margin: 0; font-family: ui-monospace, monospace; word-break: break-all; }
         .download-grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
-        .download-card { display: block; background: var(--card); border-radius: 0.5rem; padding: 1rem; text-decoration: none; color: inherit; border: 1px solid #1e293b; transition: border-color 0.2s; }
+        .download-card { display: block; background: var(--card); border-radius: 0.5rem; padding: 1rem; text-decoration: none; color: inherit; border: 1px solid var(--border); transition: border-color 0.2s; }
         .download-card:hover { border-color: var(--accent); }
         .download-card h3 { margin: 0 0 0.25rem; font-size: 1rem; }
         .download-card p { margin: 0; color: var(--muted); font-size: 0.875rem; }
-        pre { background: var(--card); padding: 1rem; border-radius: 0.5rem; overflow-x: auto; }
+        
+        .tabs { border-bottom: 1px solid var(--border); display: flex; gap: 1rem; margin-bottom: -1px; }
+        .tab-btn { background: none; border: none; color: var(--muted); padding: 0.5rem 0.25rem; cursor: pointer; font-size: 0.875rem; border-bottom: 2px solid transparent; }
+        .tab-btn.active { color: var(--fg); border-bottom-color: var(--accent); }
+        .tab-content { display: none; margin-top: 1rem; }
+        .tab-content.active { display: block; }
+
+        pre { background: var(--card); padding: 1rem; border-radius: 0.5rem; overflow-x: auto; border: 1px solid var(--border); }
         code { font-family: ui-monospace, monospace; font-size: 0.875rem; }
-        footer { margin-top: 2rem; padding-top: 1rem; border-top: 1px solid #1e293b; color: var(--muted); font-size: 0.875rem; }
+        footer { margin-top: 2rem; padding-top: 1rem; border-top: 1px solid var(--border); color: var(--muted); font-size: 0.875rem; }
         noscript { display: block; background: var(--card); padding: 1rem; border-radius: 0.5rem; margin: 1rem 0; }
+        .motivation { font-size: 0.9375rem; color: var(--fg); margin-bottom: 1rem; }
     </style>
 </head>
 <body>
     <h1>Nano (XNO) Ledger Snapshot</h1>
     <p class="subtitle">Verified, signed snapshot for bootstrapping Nano nodes — distributed via BitTorrent and HTTP.</p>
 
+    <span id="data-age">Loading status…</span>
     <div hx-get="/api/status-fragment"
          hx-trigger="load, every 60s"
          hx-swap="innerHTML">
-        <p>Loading snapshot status…</p>
+        <p>Connecting to swarm hub…</p>
     </div>
 
     <noscript>
         <p>JavaScript is disabled. You can view the current status as <a href="/api/status">JSON</a> or download directly from the web seed if you know the URL.</p>
     </noscript>
 
+    <section id="one-shot">
+        <h2>Fast Bootstrap</h2>
+        <p class="motivation">Run a temporary container to download the latest ledger directly into your node's data directory.</p>
+        
+        <div class="tabs" data-group="one-shot">
+            <button class="tab-btn active" data-tab="docker">Docker</button>
+            <button class="tab-btn" data-tab="podman">Podman</button>
+            <button class="tab-btn" data-tab="compose">Compose</button>
+        </div>
+
+        <div class="tab-content active" data-group="one-shot" data-id="docker">
+            <pre><code>docker run --rm -it \
+  -v ./nano-data:/data \
+  ghcr.io/openrai/nano-p2p-mirror:latest --one-shot</code></pre>
+        </div>
+        <div class="tab-content" data-group="one-shot" data-id="podman">
+            <pre><code>podman run --rm -it \
+  -v ./nano-data:/data:Z \
+  ghcr.io/openrai/nano-p2p-mirror:latest --one-shot</code></pre>
+        </div>
+        <div class="tab-content" data-group="one-shot" data-id="compose">
+            <pre><code>services:
+  bootstrap:
+    image: ghcr.io/openrai/nano-p2p-mirror:latest
+    command: --one-shot
+    volumes:
+      - ./nano-data:/data</code></pre>
+        </div>
+    </section>
+
     <section id="seed">
-        <h2>Help Seed</h2>
-        <pre><code>docker run -d -p 6881:6881/tcp -p 6881:6881/udp \
+        <h2>Help the Swarm</h2>
+        <p class="motivation">Keep the container running in the background to serve as a high-availability seed, strengthening the P2P network for everyone.</p>
+        
+        <div class="tabs" data-group="seed">
+            <button class="tab-btn active" data-tab="docker">Docker</button>
+            <button class="tab-btn" data-tab="podman">Podman</button>
+            <button class="tab-btn" data-tab="compose">Compose</button>
+        </div>
+
+        <div class="tab-content active" data-group="seed" data-id="docker">
+            <pre><code>docker run -d --name nano-seed \
+  -p 6881:6881/tcp -p 6881:6881/udp \
   -v nano-data:/data \
+  --restart unless-stopped \
   ghcr.io/openrai/nano-p2p-mirror:latest</code></pre>
+        </div>
+        <div class="tab-content" data-group="seed" data-id="podman">
+            <pre><code>podman run -d --name nano-seed \
+  -p 6881:6881/tcp -p 6881:6881/udp \
+  -v nano-data:/data:Z \
+  --restart unless-stopped \
+  ghcr.io/openrai/nano-p2p-mirror:latest</code></pre>
+        </div>
+        <div class="tab-content" data-group="seed" data-id="compose">
+            <pre><code>services:
+  seed:
+    image: ghcr.io/openrai/nano-p2p-mirror:latest
+    ports:
+      - "6881:6881/tcp"
+      - "6881:6881/udp"
+    volumes:
+      - nano-data:/data
+    restart: unless-stopped
+
+volumes:
+  nano-data:</code></pre>
+        </div>
     </section>
 
     <section id="about">
@@ -66,7 +139,34 @@
     </section>
 
     <footer>
-        Nano snapshot hub · Data refreshed every ~5 minutes · <a href="/api/status">API</a> · <a href="/health">Health</a>
+        Nano snapshot hub · <a href="/api/status">API</a> · <a href="/health">Health</a>
     </footer>
+
+    <script>
+        // Simple tab switcher
+        document.querySelectorAll('.tab-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const group = btn.parentElement.dataset.group;
+                const tab = btn.dataset.tab;
+                
+                document.querySelectorAll(`.tab-btn[data-group="${group}"]`).forEach(b => b.classList.remove('active'));
+                document.querySelectorAll(`.tab-content[data-group="${group}"]`).forEach(c => c.classList.remove('active'));
+                
+                btn.classList.add('active');
+                document.querySelector(`.tab-content[data-group="${group}"][data-id="${tab}"]`).classList.add('active');
+            });
+        });
+
+        // Relative time for data age
+        setInterval(() => {
+            const ageEl = document.getElementById('data-age');
+            if (ageEl && ageEl.dataset.updated) {
+                const diff = Math.floor((new Date().getTime() - parseInt(ageEl.dataset.updated)) / 1000);
+                if (diff < 5) ageEl.innerText = "Status updated just now";
+                else if (diff < 60) ageEl.innerText = `Status updated ${diff}s ago`;
+                else ageEl.innerText = `Status updated ${Math.floor(diff/60)}m ago`;
+            }
+        }, 5000);
+    </script>
 </body>
 </html>
