@@ -149,7 +149,6 @@ def get_status_fragment() -> Response:
         raise HTTPException(status_code=404, detail="No status available yet")
     html = (Path(__file__).parent / "templates" / "status_fragment.html").read_text()
     rendered = html.replace("{{ sequence }}", str(_current_status["sequence"]))
-    rendered = rendered.replace("{{ info_hash_short }}", _current_status["info_hash"][:16])
     rendered = rendered.replace("{{ info_hash }}", _current_status["info_hash"])
     rendered = rendered.replace("{{ timestamp }}", _current_status["timestamp"])
     rendered = rendered.replace("{{ magnet }}", _current_status["magnet"])
@@ -185,9 +184,8 @@ def index() -> Response:
     fragment_path = Path(__file__).parent / "templates" / "status_fragment.html"
     fragment = fragment_path.read_text()
     fragment = fragment.replace("{{ sequence }}", str(_current_status["sequence"]))
-    fragment = fragment.replace("{{ info_hash_short }}", _current_status["info_hash"][:16])
+    fragment = fragment.replace("{{ info_hash }}", _current_status["info_hash"])
     fragment = fragment.replace("{{ timestamp }}", _current_status["timestamp"])
-    fragment = fragment.replace("{{ magnet }}", _current_status["magnet"])
     fragment = fragment.replace("{{ web_seed_url }}", _current_status["web_seed_url"])
     fragment += f'<span id="_push-ts" data-ts="{_current_status["timestamp"]}" hidden></span>'
 
